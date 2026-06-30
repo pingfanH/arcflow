@@ -14,6 +14,8 @@ import {
   RefreshCw,
   ShieldCheck,
   Square,
+  ToggleLeft,
+  ToggleRight,
   Wifi,
   Zap,
 } from "lucide-react";
@@ -55,6 +57,20 @@ type StorageStatus = {
   databasePath: string;
 };
 
+type PluginRegistryEntry = {
+  id: string;
+  name: string;
+  version: string;
+  runtime: string;
+  apiVersion: string;
+  capabilities: string[];
+  enabled: boolean;
+};
+
+type PluginRegistryResponse = {
+  plugins: PluginRegistryEntry[];
+};
+
 const navItems = [
   { id: "device", label: "Device", icon: Bluetooth },
   { id: "wave", label: "Wave", icon: Activity },
@@ -81,6 +97,20 @@ const fallbackStorageStatus: StorageStatus = {
   databasePath: "",
 };
 
+const emptyPluginRegistry: PluginRegistryResponse = {
+  plugins: [],
+};
+
+const starterPluginManifest = {
+  id: "dev.arcflow.pulse-tools",
+  name: "Pulse Tools",
+  version: "0.1.0",
+  runtime: "wasm",
+  entry: "dist/plugin.wasm",
+  apiVersion: "1",
+  capabilities: ["device.read", "storage.private"],
+};
+
 function App() {
   const [activeTab, setActiveTab] = useState<(typeof navItems)[number]["id"]>("device");
   const [status, setStatus] = useState<AppStatus | null>(null);
@@ -89,8 +119,10 @@ function App() {
   const [externalBusy, setExternalBusy] = useState(false);
   const [lastScan, setLastScan] = useState<DeviceScanResponse | null>(null);
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+  const [pluginRegistry, setPluginRegistry] = useState<PluginRegistryResponse | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
   const [stopBusy, setStopBusy] = useState(false);
+  const [pluginBusy, setPluginBusy] = useState(false);
   const [deviceOnline, setDeviceOnline] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [channelA, setChannelA] = useState(12);
@@ -100,6 +132,12 @@ function App() {
     invoke<ExternalControlStatus>("external_control_status")
       .then(setExternalStatus)
       .catch(() => setExternalStatus(stoppedExternalControl));
+  }, []);
+
+  const refreshPluginRegistry = useCallback(() => {
+    invoke<PluginRegistryResponse>("plugin_registry")
+      .then(setPluginRegistry)
+      .catch(() => setPluginRegistry(emptyPluginRegistry));
   }, []);
 
   useEffect(() => {
@@ -118,7 +156,8 @@ function App() {
     invoke<StorageStatus>("storage_status")
       .then(setStorageStatus)
       .catch(() => setStorageStatus(fallbackStorageStatus));
-  }, [refreshExternalStatus]);
+    refreshPluginRegistry();
+  }, [refreshExternalStatus, refreshPluginRegistry]);
 
   const startExternalControl = () => {
     setExternalBusy(true);
@@ -156,6 +195,24 @@ function App() {
       .then(() => setPlaying(false))
       .catch(() => setPlaying(false))
       .finally(() => setStopBusy(false));
+  };
+
+  const installStarterPlugin = () => {
+    setPluginBusy(true);
+    invoke<PluginRegistryResponse>("install_plugin_manifest", {
+      manifestJson: JSON.stringify(starterPluginManifest),
+    })
+      .then(setPluginRegistry)
+      .catch(refreshPluginRegistry)
+      .finally(() => setPluginBusy(false));
+  };
+
+  const setPluginEnabled = (pluginId: string, enabled: boolean) => {
+    setPluginBusy(true);
+    invoke<PluginRegistryResponse>("set_plugin_enabled", { pluginId, enabled })
+      .then(setPluginRegistry)
+      .catch(refreshPluginRegistry)
+      .finally(() => setPluginBusy(false));
   };
 
   const activeLabel = useMemo(
@@ -237,8 +294,8 @@ function App() {
             </div>
           </header>
 
-          <div className="grid gap-4 p-4 md:grid-cols-[1.4fr_0.8fr] md:p-6">
-            <section className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+          <div className="grid min-w-0 gap-4 p-4 md:grid-cols-[1.4fr_0.8fr] md:p-6">
+            <section className="min-w-0 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
                   <h2 className="text-base font-semibold">Coyote Session</h2>
@@ -305,18 +362,20 @@ function App() {
               </div>
             </section>
 
-            <section className="grid gap-4">
+            <section className="grid min-w-0 gap-4">
               <StatusPanel
                 icon={ShieldCheck}
                 label="Safety"
                 value={`Wave <= ${status?.maxWaveStrength ?? 30}`}
                 tone="emerald"
               />
-              <StatusPanel
-                icon={Puzzle}
-                label="Plugin runtime"
-                value={(status?.pluginRuntimes ?? ["wasm", "javascript"]).join(" / ")}
-                tone="amber"
+              <PluginRegistryPanel
+                busy={pluginBusy}
+                registry={pluginRegistry ?? emptyPluginRegistry}
+                runtimes={status?.pluginRuntimes ?? ["wasm", "javascript"]}
+                onInstallStarter={installStarterPlugin}
+                onRefresh={refreshPluginRegistry}
+                onSetEnabled={setPluginEnabled}
               />
               <StatusPanel
                 icon={Database}
@@ -349,6 +408,106 @@ function App() {
   );
 }
 
+type PluginRegistryPanelProps = {
+  busy: boolean;
+  registry: PluginRegistryResponse;
+  runtimes: string[];
+  onInstallStarter: () => void;
+  onRefresh: () => void;
+  onSetEnabled: (pluginId: string, enabled: boolean) => void;
+};
+
+function PluginRegistryPanel({
+  busy,
+  registry,
+  runtimes,
+  onInstallStarter,
+  onRefresh,
+  onSetEnabled,
+}: PluginRegistryPanelProps) {
+  const starterInstalled = registry.plugins.some((plugin) => plugin.id === starterPluginManifest.id);
+
+  return (
+    <div className="min-w-0 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-3">
+        <div className="grid size-10 place-items-center rounded-lg bg-amber-50 text-amber-700">
+          <Puzzle size={18} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-zinc-950">Plugins</div>
+          <div className="truncate text-sm text-zinc-500">
+            {registry.plugins.length} installed - {runtimes.join(" / ")}
+          </div>
+        </div>
+        <button
+          className="grid size-9 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={busy}
+          title="Refresh plugin registry"
+          type="button"
+          onClick={onRefresh}
+        >
+          <RefreshCw size={16} />
+        </button>
+        <button
+          className="inline-flex h-9 items-center rounded-lg bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={busy || starterInstalled}
+          title="Install starter plugin"
+          type="button"
+          onClick={onInstallStarter}
+        >
+          Install
+        </button>
+      </div>
+
+      <div className="mt-3 space-y-2">
+        {registry.plugins.length === 0 ? (
+          <div className="rounded-lg bg-zinc-50 px-3 py-2 text-sm text-zinc-500">
+            No plugins installed
+          </div>
+        ) : (
+          registry.plugins.map((plugin) => (
+            <div key={plugin.id} className="rounded-lg bg-zinc-50 px-3 py-2">
+              <div className="flex items-start gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-zinc-950">
+                    {plugin.name} {plugin.version}
+                  </div>
+                  <div className="truncate text-xs text-zinc-500">
+                    {plugin.runtime} - API {plugin.apiVersion}
+                  </div>
+                </div>
+                <button
+                  className={`grid size-8 place-items-center rounded-lg border ${
+                    plugin.enabled
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : "border-zinc-200 bg-white text-zinc-600"
+                  } disabled:cursor-not-allowed disabled:opacity-50`}
+                  disabled={busy}
+                  title={plugin.enabled ? "Disable plugin" : "Enable plugin"}
+                  type="button"
+                  onClick={() => onSetEnabled(plugin.id, !plugin.enabled)}
+                >
+                  {plugin.enabled ? <ToggleRight size={17} /> : <ToggleLeft size={17} />}
+                </button>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {plugin.capabilities.map((capability) => (
+                  <span
+                    key={capability}
+                    className="rounded-md bg-white px-2 py-1 text-xs text-zinc-600"
+                  >
+                    {capability}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 type ExternalControlPanelProps = {
   defaultBind: string;
   busy: boolean;
@@ -368,7 +527,7 @@ function ExternalControlPanel({
   const bind = status.bindAddress ?? defaultBind;
 
   return (
-    <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+    <div className="min-w-0 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
       <div className="flex items-center gap-3">
         <div
           className={`grid size-10 place-items-center rounded-lg ${
@@ -418,7 +577,7 @@ type ChannelControlProps = {
 
 function ChannelControl({ label, value, limit, onChange }: ChannelControlProps) {
   return (
-    <div className="rounded-lg border border-zinc-200 p-3">
+    <div className="min-w-0 rounded-lg border border-zinc-200 p-3">
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2 text-sm font-medium">
           <Gauge size={16} className="text-teal-700" />
@@ -427,7 +586,7 @@ function ChannelControl({ label, value, limit, onChange }: ChannelControlProps) 
         <div className="tabular-nums text-sm font-semibold">{value}</div>
       </div>
       <input
-        className="w-full accent-teal-600"
+        className="w-full min-w-0 accent-teal-600"
         max={limit}
         min={0}
         type="range"
@@ -458,7 +617,7 @@ function StatusPanel({ icon: Icon, label, value, tone }: StatusPanelProps) {
   }[tone];
 
   return (
-    <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+    <div className="min-w-0 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
       <div className="flex items-center gap-3">
         <div className={`grid size-10 place-items-center rounded-lg ${toneClass}`}>
           <Icon size={18} />

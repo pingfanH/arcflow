@@ -3,8 +3,31 @@
 use core::fmt;
 use std::collections::BTreeSet;
 
-use arcflow_plugin_runtime::{PluginManifest, PluginRegistry};
+use arcflow_plugin_runtime::{
+    Capability, PluginManifest, PluginRecord, PluginRegistry, RuntimeKind,
+};
 use arcflow_storage::{Storage, StorageError, StoredPluginRecord};
+use serde::Serialize;
+
+/// Plugin registry entry returned to platform UI and IPC callers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginRegistryEntry {
+    /// Stable plugin id.
+    pub id: String,
+    /// Human-readable plugin name.
+    pub name: String,
+    /// Plugin version string.
+    pub version: String,
+    /// Runtime required by this plugin.
+    pub runtime: String,
+    /// Plugin API version requested by this plugin.
+    pub api_version: String,
+    /// Capabilities requested by this plugin.
+    pub capabilities: Vec<String>,
+    /// Whether this plugin should be enabled at startup.
+    pub enabled: bool,
+}
 
 /// Core-owned plugin registry persistence bridge.
 pub struct PluginRegistryPersistence<'a> {
@@ -41,6 +64,64 @@ impl<'a> PluginRegistryPersistence<'a> {
         Ok(registry)
     }
 
+    /// Lists the persisted plugin registry as stable IPC-friendly records.
+    pub fn list_entries(&self) -> Result<Vec<PluginRegistryEntry>, PluginRegistryPersistenceError> {
+        Ok(self
+            .load()?
+            .list()
+            .into_iter()
+            .map(plugin_registry_entry)
+            .collect())
+    }
+
+    /// Installs a plugin manifest JSON document and persists the registry.
+    pub fn install_manifest_json(
+        &self,
+        manifest_json: &str,
+    ) -> Result<Vec<PluginRegistryEntry>, PluginRegistryPersistenceError> {
+        let manifest = PluginManifest::from_json(manifest_json)
+            .map_err(|error| PluginRegistryPersistenceError::Manifest(error.to_string()))?;
+        let mut registry = self.load()?;
+
+        registry
+            .install(manifest)
+            .map_err(|error| PluginRegistryPersistenceError::Registry(error.to_string()))?;
+        self.save(&registry)?;
+
+        Ok(registry
+            .list()
+            .into_iter()
+            .map(plugin_registry_entry)
+            .collect())
+    }
+
+    /// Updates a plugin enabled flag and persists the registry.
+    pub fn set_enabled(
+        &self,
+        plugin_id: &str,
+        enabled: bool,
+    ) -> Result<Vec<PluginRegistryEntry>, PluginRegistryPersistenceError> {
+        let mut registry = self.load()?;
+
+        if enabled {
+            registry
+                .enable(plugin_id)
+                .map_err(|error| PluginRegistryPersistenceError::Registry(error.to_string()))?;
+        } else {
+            registry
+                .disable(plugin_id)
+                .map_err(|error| PluginRegistryPersistenceError::Registry(error.to_string()))?;
+        }
+
+        self.save(&registry)?;
+
+        Ok(registry
+            .list()
+            .into_iter()
+            .map(plugin_registry_entry)
+            .collect())
+    }
+
     /// Saves the current plugin-runtime registry as the persisted registry.
     pub fn save(&self, registry: &PluginRegistry) -> Result<(), PluginRegistryPersistenceError> {
         let store = self.storage.plugin_registry();
@@ -68,6 +149,35 @@ impl<'a> PluginRegistryPersistence<'a> {
 
         Ok(())
     }
+}
+
+fn plugin_registry_entry(record: &PluginRecord) -> PluginRegistryEntry {
+    let manifest = record.manifest();
+
+    PluginRegistryEntry {
+        id: manifest.id.clone(),
+        name: manifest.name.clone(),
+        version: manifest.version.clone(),
+        runtime: runtime_name(manifest.runtime).to_owned(),
+        api_version: manifest.api_version.clone(),
+        capabilities: manifest
+            .capabilities
+            .iter()
+            .map(|capability| capability_name(*capability).to_owned())
+            .collect(),
+        enabled: record.enabled(),
+    }
+}
+
+fn runtime_name(runtime: RuntimeKind) -> &'static str {
+    match runtime {
+        RuntimeKind::Wasm => "wasm",
+        RuntimeKind::JavaScript => "javascript",
+    }
+}
+
+fn capability_name(capability: Capability) -> &'static str {
+    capability.as_str()
 }
 
 /// Error returned by plugin registry persistence.
@@ -154,5 +264,39 @@ mod tests {
         persistence.save(&PluginRegistry::new()).unwrap();
 
         assert!(storage.plugin_registry().list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn installs_manifest_json_and_returns_entries() {
+        let storage = Storage::in_memory().unwrap();
+        let persistence = PluginRegistryPersistence::new(&storage);
+        let manifest_json = serde_json::to_string(&manifest("plugin.a")).unwrap();
+
+        let entries = persistence.install_manifest_json(&manifest_json).unwrap();
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "plugin.a");
+        assert_eq!(entries[0].runtime, "wasm");
+        assert_eq!(entries[0].capabilities, vec!["device.read"]);
+        assert!(!entries[0].enabled);
+        assert!(storage.plugin_registry().get("plugin.a").unwrap().is_some());
+    }
+
+    #[test]
+    fn set_enabled_updates_persisted_registry() {
+        let storage = Storage::in_memory().unwrap();
+        let persistence = PluginRegistryPersistence::new(&storage);
+        let manifest_json = serde_json::to_string(&manifest("plugin.a")).unwrap();
+
+        persistence.install_manifest_json(&manifest_json).unwrap();
+        let entries = persistence.set_enabled("plugin.a", true).unwrap();
+
+        assert!(entries[0].enabled);
+        assert!(persistence
+            .load()
+            .unwrap()
+            .get("plugin.a")
+            .unwrap()
+            .enabled());
     }
 }

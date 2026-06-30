@@ -34,7 +34,9 @@ pub use external::{
     required_capability_for_external_request,
 };
 pub use plugin_api::{PluginApi, PluginApiError};
-pub use plugin_registry_persistence::{PluginRegistryPersistence, PluginRegistryPersistenceError};
+pub use plugin_registry_persistence::{
+    PluginRegistryEntry, PluginRegistryPersistence, PluginRegistryPersistenceError,
+};
 pub use runtime::{
     ArcFlowCore, DeviceDiscoveryController, DeviceOutputController, NoopDeviceDiscoveryController,
     NoopDeviceOutputController,

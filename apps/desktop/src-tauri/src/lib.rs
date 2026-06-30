@@ -4,7 +4,8 @@ use std::{
 };
 
 use arcflow_core::{
-    ArcFlowCore, DeviceModel, DeviceScanResult, DeviceStatus, SafetyLimits, StopOutputResult,
+    ArcFlowCore, DeviceModel, DeviceScanResult, DeviceStatus, PluginRegistryEntry,
+    PluginRegistryPersistence, SafetyLimits, StopOutputResult,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
@@ -77,6 +78,12 @@ struct StorageStatus {
     database_path: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginRegistryResponse {
+    plugins: Vec<PluginRegistryEntry>,
+}
+
 #[tauri::command]
 fn app_status() -> AppStatus {
     let limits = SafetyLimits::conservative();
@@ -101,6 +108,48 @@ fn storage_status(state: tauri::State<'_, StorageState>) -> Result<StorageStatus
         schema_version,
         database_path: state.database_path.display().to_string(),
     })
+}
+
+#[tauri::command]
+fn plugin_registry(
+    state: tauri::State<'_, StorageState>,
+) -> Result<PluginRegistryResponse, String> {
+    let storage = state.storage.lock().expect("storage state mutex poisoned");
+    let persistence = PluginRegistryPersistence::new(&storage);
+    let plugins = persistence
+        .list_entries()
+        .map_err(|error| error.to_string())?;
+
+    Ok(PluginRegistryResponse { plugins })
+}
+
+#[tauri::command]
+fn install_plugin_manifest(
+    manifest_json: String,
+    state: tauri::State<'_, StorageState>,
+) -> Result<PluginRegistryResponse, String> {
+    let storage = state.storage.lock().expect("storage state mutex poisoned");
+    let persistence = PluginRegistryPersistence::new(&storage);
+    let plugins = persistence
+        .install_manifest_json(&manifest_json)
+        .map_err(|error| error.to_string())?;
+
+    Ok(PluginRegistryResponse { plugins })
+}
+
+#[tauri::command]
+fn set_plugin_enabled(
+    plugin_id: String,
+    enabled: bool,
+    state: tauri::State<'_, StorageState>,
+) -> Result<PluginRegistryResponse, String> {
+    let storage = state.storage.lock().expect("storage state mutex poisoned");
+    let persistence = PluginRegistryPersistence::new(&storage);
+    let plugins = persistence
+        .set_enabled(&plugin_id, enabled)
+        .map_err(|error| error.to_string())?;
+
+    Ok(PluginRegistryResponse { plugins })
 }
 
 #[tauri::command]
@@ -290,6 +339,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_status,
             storage_status,
+            plugin_registry,
+            install_plugin_manifest,
+            set_plugin_enabled,
             scan_devices,
             stop_output,
             external_control_status,
