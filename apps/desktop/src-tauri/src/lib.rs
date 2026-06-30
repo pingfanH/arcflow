@@ -185,13 +185,17 @@ fn external_control_status_from_handle(handle: &WsGatewayHandle) -> ExternalCont
 }
 
 fn external_request_handler(core: ArcFlowCore) -> WsRequestHandler {
-    Arc::new(move |session: &ClientSession, request: JsonRpcRequest| {
-        let id = request.id.clone();
+    Arc::new(move |session: ClientSession, request: JsonRpcRequest| {
+        let core = core.clone();
 
-        match core.execute_external_request(session, &request) {
-            Ok(result) => JsonRpcResponse::ok(id, result),
-            Err(error) => JsonRpcResponse::error(id, RpcError::new(-32000, error.to_string())),
-        }
+        Box::pin(async move {
+            let id = request.id.clone();
+
+            match core.execute_external_request(&session, &request) {
+                Ok(result) => JsonRpcResponse::ok(id, result),
+                Err(error) => JsonRpcResponse::error(id, RpcError::new(-32000, error.to_string())),
+            }
+        })
     })
 }
 

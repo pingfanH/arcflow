@@ -18,6 +18,6 @@ pub use protocol::{
 pub use security::{ExposureMode, DEFAULT_LOCAL_BIND};
 pub use server::{
     AcceptedClient, AcceptedSession, WsGateway, WsGatewayError, WsGatewayHandle,
-    WsGatewayRuntimeStatus, WsGatewayService, WsRequestHandler,
+    WsGatewayRuntimeStatus, WsGatewayService, WsRequestFuture, WsRequestHandler,
 };
 pub use session::{ClientSession, GatewayPolicy, SessionError};

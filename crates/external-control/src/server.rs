@@ -2,7 +2,9 @@
 
 use core::fmt;
 use std::{
+    future::Future,
     net::SocketAddr,
+    pin::Pin,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -24,9 +26,12 @@ use crate::{
     SessionError, PROTOCOL_VERSION,
 };
 
+/// Future returned by a WebSocket JSON-RPC request handler.
+pub type WsRequestFuture = Pin<Box<dyn Future<Output = JsonRpcResponse> + Send + 'static>>;
+
 /// Function used by the WebSocket service to route one JSON-RPC request.
 pub type WsRequestHandler =
-    Arc<dyn Fn(&ClientSession, JsonRpcRequest) -> JsonRpcResponse + Send + Sync + 'static>;
+    Arc<dyn Fn(ClientSession, JsonRpcRequest) -> WsRequestFuture + Send + Sync + 'static>;
 
 /// Accepted session response sent to a WebSocket client after hello.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -325,14 +330,13 @@ async fn serve_client(
                 };
                 match message {
                     Ok(Message::Text(text)) => {
-                        let response = serde_json::from_str::<JsonRpcRequest>(&text)
-                            .map(|request| request_handler(&session, request))
-                            .unwrap_or_else(|error| {
-                                JsonRpcResponse::error(
-                                    crate::RequestId::String("invalid-request".to_owned()),
-                                    RpcError::new(-32700, format!("invalid JSON-RPC request: {error}")),
-                                )
-                            });
+                        let response = match serde_json::from_str::<JsonRpcRequest>(&text) {
+                            Ok(request) => request_handler(session.clone(), request).await,
+                            Err(error) => JsonRpcResponse::error(
+                                crate::RequestId::String("invalid-request".to_owned()),
+                                RpcError::new(-32700, format!("invalid JSON-RPC request: {error}")),
+                            ),
+                        };
 
                         let Ok(payload) = serde_json::to_string(&response) else {
                             break;
@@ -426,7 +430,9 @@ mod tests {
     async fn service_routes_json_rpc_messages() {
         let service = WsGatewayService::new("127.0.0.1:0", GatewayPolicy::local_default());
         let handler: WsRequestHandler = Arc::new(|_session, request| {
-            JsonRpcResponse::ok(request.id, json!({ "method": request.method }))
+            Box::pin(
+                async move { JsonRpcResponse::ok(request.id, json!({ "method": request.method })) },
+            )
         });
         let handle = service.start(handler).await.unwrap();
         let address = handle.bind_address();
