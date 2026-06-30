@@ -45,7 +45,7 @@ pub use plugin_registry_persistence::{
 };
 pub use runtime::{
     ArcFlowCore, DeviceDiscoveryController, DeviceOutputController, NoopDeviceDiscoveryController,
-    NoopDeviceOutputController,
+    NoopDeviceOutputController, NoopScriptRunner, ScriptRunResult, ScriptRunner,
 };
 pub use safety::SafetyLimits;
 pub use session::{CoyoteV3StrengthStatus, DeviceSession};

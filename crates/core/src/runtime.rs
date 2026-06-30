@@ -3,6 +3,7 @@
 use std::{fmt, sync::Arc};
 
 use arcflow_external_control::{ClientSession, JsonRpcRequest};
+use arcflow_script::SCRIPT_VERSION;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -45,6 +46,52 @@ pub trait DeviceOutputController: fmt::Debug + Send + Sync {
     fn stop_all_output(&self) -> Result<StopOutputResult, CoreError>;
 }
 
+/// Script runner used by Core to queue or execute compiled scripts.
+pub trait ScriptRunner: fmt::Debug + Send + Sync {
+    /// Runs a script by id.
+    fn run_script(&self, script_id: &str) -> Result<ScriptRunResult, CoreError>;
+}
+
+/// Script runner used before the real script engine is attached.
+#[derive(Debug, Default)]
+pub struct NoopScriptRunner;
+
+impl ScriptRunner for NoopScriptRunner {
+    fn run_script(&self, script_id: &str) -> Result<ScriptRunResult, CoreError> {
+        Ok(ScriptRunResult::new(script_id, false))
+    }
+}
+
+/// Result of a script run request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptRunResult {
+    script_id: String,
+    queued: bool,
+}
+
+impl ScriptRunResult {
+    /// Constructs a script run result.
+    #[must_use]
+    pub fn new(script_id: impl Into<String>, queued: bool) -> Self {
+        Self {
+            script_id: script_id.into(),
+            queued,
+        }
+    }
+
+    /// Returns the script id.
+    #[must_use]
+    pub fn script_id(&self) -> &str {
+        &self.script_id
+    }
+
+    /// Returns whether the script was queued for asynchronous execution.
+    #[must_use]
+    pub fn queued(&self) -> bool {
+        self.queued
+    }
+}
+
 /// Output controller used before a platform BLE Adapter is attached.
 #[derive(Debug, Default)]
 pub struct NoopDeviceOutputController;
@@ -70,6 +117,7 @@ pub struct ArcFlowCore {
     safety_limits: SafetyLimits,
     discovery_controller: Arc<dyn DeviceDiscoveryController>,
     output_controller: Arc<dyn DeviceOutputController>,
+    script_runner: Arc<dyn ScriptRunner>,
 }
 
 impl ArcFlowCore {
@@ -80,6 +128,7 @@ impl ArcFlowCore {
             safety_limits,
             Arc::new(NoopDeviceDiscoveryController),
             Arc::new(NoopDeviceOutputController),
+            Arc::new(NoopScriptRunner),
         )
     }
 
@@ -93,6 +142,21 @@ impl ArcFlowCore {
             safety_limits,
             Arc::new(NoopDeviceDiscoveryController),
             output_controller,
+            Arc::new(NoopScriptRunner),
+        )
+    }
+
+    /// Constructs a core runtime with an explicit script runner.
+    #[must_use]
+    pub fn with_script_runner(
+        safety_limits: SafetyLimits,
+        script_runner: Arc<dyn ScriptRunner>,
+    ) -> Self {
+        Self::with_controllers(
+            safety_limits,
+            Arc::new(NoopDeviceDiscoveryController),
+            Arc::new(NoopDeviceOutputController),
+            script_runner,
         )
     }
 
@@ -102,11 +166,13 @@ impl ArcFlowCore {
         safety_limits: SafetyLimits,
         discovery_controller: Arc<dyn DeviceDiscoveryController>,
         output_controller: Arc<dyn DeviceOutputController>,
+        script_runner: Arc<dyn ScriptRunner>,
     ) -> Self {
         Self {
             safety_limits,
             discovery_controller,
             output_controller,
+            script_runner,
         }
     }
 
@@ -136,6 +202,11 @@ impl ArcFlowCore {
         request: CoyoteV3OutputRequest,
     ) -> Result<SubmitOutputResult, CoreError> {
         self.output_controller.submit_coyote_v3_window(request)
+    }
+
+    /// Runs a script through the active script runner.
+    pub fn run_script(&self, script_id: &str) -> Result<ScriptRunResult, CoreError> {
+        self.script_runner.run_script(script_id)
     }
 
     /// Executes an external-control request after capability authorization.
@@ -192,12 +263,17 @@ impl ArcFlowCore {
                     "stopped": stopped,
                 }))
             }
-            CoreCommand::RunScript { script_id } => Ok(json!({
-                "accepted": true,
-                "command": "script.run",
-                "scriptId": script_id,
-                "queued": false,
-            })),
+            CoreCommand::RunScript { script_id } => {
+                let result = self.run_script(&script_id)?;
+
+                Ok(json!({
+                    "accepted": true,
+                    "command": "script.run",
+                    "scriptId": result.script_id(),
+                    "scriptVersion": SCRIPT_VERSION,
+                    "queued": result.queued(),
+                }))
+            }
         }
     }
 
@@ -267,6 +343,7 @@ mod tests {
             SafetyLimits::conservative(),
             Arc::new(FakeDiscoveryController),
             Arc::new(NoopDeviceOutputController),
+            Arc::new(NoopScriptRunner),
         );
         let scan = core.scan_devices().await.unwrap();
 
@@ -367,6 +444,41 @@ mod tests {
         ]);
 
         CoyoteV3Window::new(ChannelOutput::Window(channel), ChannelOutput::Disabled)
+    }
+
+    #[tokio::test]
+    async fn executes_script_run_through_runner() {
+        #[derive(Debug)]
+        struct FakeScriptRunner;
+
+        impl ScriptRunner for FakeScriptRunner {
+            fn run_script(&self, script_id: &str) -> Result<ScriptRunResult, CoreError> {
+                Ok(ScriptRunResult::new(script_id, true))
+            }
+        }
+
+        let core = ArcFlowCore::with_script_runner(
+            SafetyLimits::conservative(),
+            Arc::new(FakeScriptRunner),
+        );
+
+        let result = core
+            .execute_command(CoreCommand::RunScript {
+                script_id: "script.demo".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            json!({
+                "accepted": true,
+                "command": "script.run",
+                "scriptId": "script.demo",
+                "scriptVersion": SCRIPT_VERSION,
+                "queued": true,
+            })
+        );
     }
 
     #[tokio::test]

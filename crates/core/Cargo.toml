@@ -9,6 +9,7 @@ publish = false
 arcflow-external-control.workspace = true
 arcflow-plugin-runtime.workspace = true
 arcflow-protocol.workspace = true
+arcflow-script.workspace = true
 arcflow-storage.workspace = true
 arcflow-wave.workspace = true
 async-trait.workspace = true
