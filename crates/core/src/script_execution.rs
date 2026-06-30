@@ -9,6 +9,22 @@ use serde_json::Value;
 
 use crate::CoreError;
 
+/// Queue that accepts compiled scripts for asynchronous execution.
+pub trait CompiledScriptQueue: fmt::Debug + Send + Sync {
+    /// Enqueues one compiled script.
+    fn enqueue(&self, script: CompiledScript) -> Result<(), CoreError>;
+}
+
+/// Queue used before a background script worker is attached.
+#[derive(Debug, Default)]
+pub struct NoopCompiledScriptQueue;
+
+impl CompiledScriptQueue for NoopCompiledScriptQueue {
+    fn enqueue(&self, _script: CompiledScript) -> Result<(), CoreError> {
+        Ok(())
+    }
+}
+
 /// Host action surface used by the script execution engine.
 #[async_trait]
 pub trait ScriptActionExecutor: fmt::Debug + Send + Sync {

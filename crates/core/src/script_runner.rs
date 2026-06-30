@@ -8,20 +8,37 @@ use std::{
 use arcflow_script::{ScriptCompiler, ScriptDocument};
 use arcflow_storage::Storage;
 
-use crate::{CoreError, ScriptRunResult, ScriptRunner};
+use crate::{
+    CompiledScriptQueue, CoreError, NoopCompiledScriptQueue, ScriptRunResult, ScriptRunner,
+};
 
 /// Script runner backed by Core-owned SQLite storage.
 #[derive(Clone)]
 pub struct StorageScriptRunner {
     storage: Arc<Mutex<Storage>>,
     compiler: ScriptCompiler,
+    queue: Arc<dyn CompiledScriptQueue>,
 }
 
 impl StorageScriptRunner {
     /// Constructs a storage-backed script runner.
     #[must_use]
     pub fn new(storage: Arc<Mutex<Storage>>, compiler: ScriptCompiler) -> Self {
-        Self { storage, compiler }
+        Self::with_queue(storage, compiler, Arc::new(NoopCompiledScriptQueue))
+    }
+
+    /// Constructs a storage-backed script runner with an explicit execution queue.
+    #[must_use]
+    pub fn with_queue(
+        storage: Arc<Mutex<Storage>>,
+        compiler: ScriptCompiler,
+        queue: Arc<dyn CompiledScriptQueue>,
+    ) -> Self {
+        Self {
+            storage,
+            compiler,
+            queue,
+        }
     }
 }
 
@@ -45,16 +62,39 @@ impl ScriptRunner for StorageScriptRunner {
         };
         let document = ScriptDocument::from_json(&document_json)?;
         let compiled = self.compiler.compile(document)?;
+        let script_id = compiled.id().to_owned();
+        self.queue.enqueue(compiled)?;
 
-        Ok(ScriptRunResult::new(compiled.id(), true))
+        Ok(ScriptRunResult::new(script_id, true))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex as StdMutex;
+
+    use arcflow_script::CompiledScript;
     use arcflow_storage::{Storage, StoredScriptRecord};
 
     use super::*;
+
+    #[derive(Debug, Default)]
+    struct RecordingQueue {
+        script_ids: StdMutex<Vec<String>>,
+        fail: bool,
+    }
+
+    impl CompiledScriptQueue for RecordingQueue {
+        fn enqueue(&self, script: CompiledScript) -> Result<(), CoreError> {
+            self.script_ids.lock().unwrap().push(script.id().to_owned());
+
+            if self.fail {
+                return Err(CoreError::Script("queue failed".to_owned()));
+            }
+
+            Ok(())
+        }
+    }
 
     #[test]
     fn runs_stored_script_after_compilation() {
@@ -74,6 +114,50 @@ mod tests {
 
         assert_eq!(result.script_id(), "script.demo");
         assert!(result.queued());
+    }
+
+    #[test]
+    fn enqueues_compiled_script() {
+        let storage = Arc::new(Mutex::new(Storage::in_memory().unwrap()));
+        storage
+            .lock()
+            .unwrap()
+            .scripts()
+            .upsert(&StoredScriptRecord::new(
+                "script.demo",
+                r#"{"id":"script.demo","version":1,"steps":[{"type":"wait","durationMs":1}]}"#,
+            ))
+            .unwrap();
+        let queue = Arc::new(RecordingQueue::default());
+        let runner =
+            StorageScriptRunner::with_queue(storage, ScriptCompiler::default(), queue.clone());
+
+        runner.run_script("script.demo").unwrap();
+
+        assert_eq!(*queue.script_ids.lock().unwrap(), vec!["script.demo"]);
+    }
+
+    #[test]
+    fn propagates_queue_failures() {
+        let storage = Arc::new(Mutex::new(Storage::in_memory().unwrap()));
+        storage
+            .lock()
+            .unwrap()
+            .scripts()
+            .upsert(&StoredScriptRecord::new(
+                "script.demo",
+                r#"{"id":"script.demo","version":1,"steps":[{"type":"wait","durationMs":1}]}"#,
+            ))
+            .unwrap();
+        let queue = Arc::new(RecordingQueue {
+            fail: true,
+            ..RecordingQueue::default()
+        });
+        let runner = StorageScriptRunner::with_queue(storage, ScriptCompiler::default(), queue);
+
+        let error = runner.run_script("script.demo").unwrap_err();
+
+        assert!(matches!(error, CoreError::Script(_)));
     }
 
     #[test]
