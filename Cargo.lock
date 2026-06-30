@@ -53,7 +53,9 @@ version = "0.1.0"
 dependencies = [
  "arcflow-external-control",
  "arcflow-plugin-runtime",
+ "arcflow-protocol",
  "arcflow-wave",
+ "async-trait",
 ]
 
 [[package]]

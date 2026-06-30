@@ -91,6 +91,16 @@ impl ChannelWindow {
             self.points[3].to_v3_segment()?,
         ])?)
     }
+
+    /// Returns the maximum wave strength in this 100ms window.
+    #[must_use]
+    pub fn max_strength(self) -> u8 {
+        self.points
+            .iter()
+            .map(|point| point.strength())
+            .max()
+            .unwrap_or(0)
+    }
 }
 
 /// Channel output state for one 100ms Coyote V3 window.
@@ -103,6 +113,15 @@ pub enum ChannelOutput {
 }
 
 impl ChannelOutput {
+    /// Returns the maximum wave strength for this channel output.
+    #[must_use]
+    pub fn max_strength(self) -> u8 {
+        match self {
+            Self::Disabled => 0,
+            Self::Window(window) => window.max_strength(),
+        }
+    }
+
     fn to_v3_channel_wave(self) -> Result<ChannelWave, WaveError> {
         match self {
             Self::Disabled => Ok(ChannelWave::disabled()),
@@ -153,6 +172,12 @@ impl CoyoteV3Window {
             self.a.to_v3_channel_wave()?,
             self.b.to_v3_channel_wave()?,
         )?)
+    }
+
+    /// Returns the maximum wave strength across both channels.
+    #[must_use]
+    pub fn max_strength(self) -> u8 {
+        self.a.max_strength().max(self.b.max_strength())
     }
 }
 

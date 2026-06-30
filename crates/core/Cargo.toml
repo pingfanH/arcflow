@@ -8,7 +8,9 @@ publish = false
 [dependencies]
 arcflow-external-control.workspace = true
 arcflow-plugin-runtime.workspace = true
+arcflow-protocol.workspace = true
 arcflow-wave.workspace = true
+async-trait.workspace = true
 
 [lib]
 path = "src/lib.rs"
