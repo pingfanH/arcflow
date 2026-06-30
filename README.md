@@ -23,6 +23,8 @@ crates/
 
 docs/
   agents/        Agent setup notes.
+  external-control/
+                 WebSocket control protocol.
   protocol/      Protocol implementation notes.
 ```
 
