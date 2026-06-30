@@ -14,6 +14,7 @@ pub mod device;
 pub mod error;
 pub mod external;
 pub mod safety;
+pub mod session;
 
 pub use ble::{BleCharacteristic, BleNotification, BleTransport, BleWrite};
 pub use command::CoreCommand;
@@ -22,3 +23,4 @@ pub use device::{DeviceId, DeviceModel, DeviceStatus};
 pub use error::CoreError;
 pub use external::core_command_from_external_request;
 pub use safety::SafetyLimits;
+pub use session::DeviceSession;
