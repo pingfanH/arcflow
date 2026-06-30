@@ -1,0 +1,18 @@
+/target/
+
+# Tauri, web, and package manager build output.
+/apps/*/dist/
+/apps/*/build/
+/node_modules/
+/.turbo/
+/.vite/
+
+# Local environment and editor files.
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+
+# Temporary scratch work.
+/.scratch/

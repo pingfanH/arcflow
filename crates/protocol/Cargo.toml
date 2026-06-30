@@ -1,0 +1,9 @@
+[package]
+name = "arcflow-protocol"
+version = "0.1.0"
+edition.workspace = true
+description = "Bluetooth protocol frames and helpers for ArcFlow-compatible devices."
+publish = false
+
+[lib]
+path = "src/lib.rs"
