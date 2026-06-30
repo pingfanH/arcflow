@@ -5,4 +5,7 @@
 
 mod ble;
 
-pub use ble::{TauriBleDiscoveryController, TauriBleDiscoveryState};
+pub use ble::{
+    StaticTauriBleDiscoveryProvider, TauriBleDiscoveryController, TauriBleDiscoveryProvider,
+    TauriBleDiscoveryState,
+};

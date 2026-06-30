@@ -1,5 +1,7 @@
 //! Tauri 2 BLE discovery adapter scaffold.
 
+use std::{fmt, sync::Arc};
+
 use arcflow_core::{
     BleAdapterStatus, BleAdvertisement, BleDeviceDiscoveryController, BleDiscovery, CoreError,
     DeviceDiscoveryController, DeviceScanResult,
@@ -22,28 +24,27 @@ pub enum TauriBleDiscoveryState {
     },
 }
 
-/// Device discovery controller used by Tauri 2 desktop and mobile shells.
+/// Provider used by the Tauri BLE controller to scan platform state.
+#[async_trait]
+pub trait TauriBleDiscoveryProvider: fmt::Debug + Send + Sync {
+    /// Scans the current platform BLE state.
+    async fn scan_state(&self) -> Result<TauriBleDiscoveryState, CoreError>;
+}
+
+/// Static provider used until real platform BLE integration is attached.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TauriBleDiscoveryController {
+pub struct StaticTauriBleDiscoveryProvider {
     state: TauriBleDiscoveryState,
 }
 
-impl TauriBleDiscoveryController {
-    /// Constructs an unsupported Tauri BLE discovery controller.
+impl StaticTauriBleDiscoveryProvider {
+    /// Constructs a static BLE discovery provider.
     #[must_use]
-    pub fn unsupported() -> Self {
-        Self {
-            state: TauriBleDiscoveryState::Unsupported,
-        }
-    }
-
-    /// Constructs a controller with an explicit state.
-    #[must_use]
-    pub fn with_state(state: TauriBleDiscoveryState) -> Self {
+    pub fn new(state: TauriBleDiscoveryState) -> Self {
         Self { state }
     }
 
-    /// Returns the configured discovery state.
+    /// Returns the static state.
     #[must_use]
     pub fn state(&self) -> &TauriBleDiscoveryState {
         &self.state
@@ -51,9 +52,42 @@ impl TauriBleDiscoveryController {
 }
 
 #[async_trait]
+impl TauriBleDiscoveryProvider for StaticTauriBleDiscoveryProvider {
+    async fn scan_state(&self) -> Result<TauriBleDiscoveryState, CoreError> {
+        Ok(self.state.clone())
+    }
+}
+
+/// Device discovery controller used by Tauri 2 desktop and mobile shells.
+#[derive(Debug, Clone)]
+pub struct TauriBleDiscoveryController {
+    provider: Arc<dyn TauriBleDiscoveryProvider>,
+}
+
+impl TauriBleDiscoveryController {
+    /// Constructs an unsupported Tauri BLE discovery controller.
+    #[must_use]
+    pub fn unsupported() -> Self {
+        Self::with_state(TauriBleDiscoveryState::Unsupported)
+    }
+
+    /// Constructs a controller with an explicit state.
+    #[must_use]
+    pub fn with_state(state: TauriBleDiscoveryState) -> Self {
+        Self::with_provider(Arc::new(StaticTauriBleDiscoveryProvider::new(state)))
+    }
+
+    /// Constructs a controller with an explicit provider.
+    #[must_use]
+    pub fn with_provider(provider: Arc<dyn TauriBleDiscoveryProvider>) -> Self {
+        Self { provider }
+    }
+}
+
+#[async_trait]
 impl DeviceDiscoveryController for TauriBleDiscoveryController {
     async fn scan_devices(&self) -> Result<DeviceScanResult, CoreError> {
-        match &self.state {
+        match self.provider.scan_state().await? {
             TauriBleDiscoveryState::Unsupported => Ok(DeviceScanResult::new(
                 BleAdapterStatus::Unsupported,
                 Vec::new(),
@@ -67,11 +101,9 @@ impl DeviceDiscoveryController for TauriBleDiscoveryController {
                 Vec::new(),
             )),
             TauriBleDiscoveryState::Ready { advertisements } => {
-                BleDeviceDiscoveryController::new(StaticBleDiscovery {
-                    advertisements: advertisements.clone(),
-                })
-                .scan_devices()
-                .await
+                BleDeviceDiscoveryController::new(StaticBleDiscovery { advertisements })
+                    .scan_devices()
+                    .await
             }
         }
     }
@@ -91,6 +123,8 @@ impl BleDiscovery for StaticBleDiscovery {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use arcflow_core::{DeviceId, DeviceModel, COYOTE_V2_SERVICE_UUID, COYOTE_V3_SERVICE_UUID};
 
     use super::*;
@@ -146,5 +180,33 @@ mod tests {
         assert_eq!(scan.adapter_status, BleAdapterStatus::Ready);
         assert_eq!(scan.devices[0].model, DeviceModel::CoyoteV2);
         assert_eq!(scan.devices[1].model, DeviceModel::CoyoteV3);
+    }
+
+    #[derive(Debug)]
+    struct CountingProvider {
+        calls: Mutex<usize>,
+        state: TauriBleDiscoveryState,
+    }
+
+    #[async_trait]
+    impl TauriBleDiscoveryProvider for CountingProvider {
+        async fn scan_state(&self) -> Result<TauriBleDiscoveryState, CoreError> {
+            *self.calls.lock().unwrap() += 1;
+            Ok(self.state.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn controller_uses_provider_for_each_scan() {
+        let provider = Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            state: TauriBleDiscoveryState::PoweredOff,
+        });
+        let controller = TauriBleDiscoveryController::with_provider(provider.clone());
+
+        controller.scan_devices().await.unwrap();
+        controller.scan_devices().await.unwrap();
+
+        assert_eq!(*provider.calls.lock().unwrap(), 2);
     }
 }
