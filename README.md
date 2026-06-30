@@ -18,6 +18,7 @@ crates/
   plugin-runtime/
                  WASM/JS plugin manifest and capability model.
   protocol/      Bluetooth protocol frames and helpers.
+  script/        Safe script document model and compiler.
   storage/       SQLite storage owned by Rust.
   wave/          Safe wave plans and protocol conversion.
 

@@ -5,6 +5,7 @@ members = [
     "crates/external-control",
     "crates/plugin-runtime",
     "crates/protocol",
+    "crates/script",
     "crates/storage",
     "crates/wave",
 ]
@@ -18,6 +19,7 @@ arcflow-core = { path = "crates/core" }
 arcflow-external-control = { path = "crates/external-control" }
 arcflow-plugin-runtime = { path = "crates/plugin-runtime" }
 arcflow-protocol = { path = "crates/protocol" }
+arcflow-script = { path = "crates/script" }
 arcflow-storage = { path = "crates/storage" }
 arcflow-wave = { path = "crates/wave" }
 async-trait = "0.1"

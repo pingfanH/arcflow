@@ -103,6 +103,14 @@ name = "arcflow-protocol"
 version = "0.1.0"
 
 [[package]]
+name = "arcflow-script"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "arcflow-storage"
 version = "0.1.0"
 dependencies = [
