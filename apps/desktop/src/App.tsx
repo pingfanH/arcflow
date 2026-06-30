@@ -4,6 +4,7 @@ import {
   Activity,
   Bluetooth,
   Cable,
+  Database,
   Gauge,
   Pause,
   Play,
@@ -49,6 +50,11 @@ type StopOutputResponse = {
   stoppedDevices: string[];
 };
 
+type StorageStatus = {
+  schemaVersion: number;
+  databasePath: string;
+};
+
 const navItems = [
   { id: "device", label: "Device", icon: Bluetooth },
   { id: "wave", label: "Wave", icon: Activity },
@@ -70,6 +76,11 @@ const emptyDeviceScan: DeviceScanResponse = {
   devices: [],
 };
 
+const fallbackStorageStatus: StorageStatus = {
+  schemaVersion: 1,
+  databasePath: "",
+};
+
 function App() {
   const [activeTab, setActiveTab] = useState<(typeof navItems)[number]["id"]>("device");
   const [status, setStatus] = useState<AppStatus | null>(null);
@@ -77,6 +88,7 @@ function App() {
     useState<ExternalControlStatus>(stoppedExternalControl);
   const [externalBusy, setExternalBusy] = useState(false);
   const [lastScan, setLastScan] = useState<DeviceScanResponse | null>(null);
+  const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
   const [stopBusy, setStopBusy] = useState(false);
   const [deviceOnline, setDeviceOnline] = useState(false);
@@ -103,6 +115,9 @@ function App() {
         }),
       );
     refreshExternalStatus();
+    invoke<StorageStatus>("storage_status")
+      .then(setStorageStatus)
+      .catch(() => setStorageStatus(fallbackStorageStatus));
   }, [refreshExternalStatus]);
 
   const startExternalControl = () => {
@@ -302,6 +317,12 @@ function App() {
                 label="Plugin runtime"
                 value={(status?.pluginRuntimes ?? ["wasm", "javascript"]).join(" / ")}
                 tone="amber"
+              />
+              <StatusPanel
+                icon={Database}
+                label="Storage"
+                value={`SQLite schema ${storageStatus?.schemaVersion ?? 1}`}
+                tone="zinc"
               />
               <ExternalControlPanel
                 defaultBind={status?.externalControlBind ?? "127.0.0.1:0"}
