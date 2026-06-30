@@ -11,5 +11,6 @@ pub use ble::{
     TauriBleDiscoveryState,
 };
 pub use transport::{
-    TauriBleTransport, TauriBleTransportProvider, UnsupportedTauriBleTransportProvider,
+    TauriBleOutputCommand, TauriBleOutputEvent, TauriBleOutputSink, TauriBleTransport,
+    TauriBleTransportProvider, UnsupportedTauriBleTransportProvider,
 };

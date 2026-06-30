@@ -2,8 +2,11 @@
 
 use std::{fmt, sync::Arc};
 
-use arcflow_core::{BleCharacteristic, BleTransport, BleWrite, CoreError};
+use arcflow_core::{
+    BleCharacteristic, BleTransport, BleWrite, CoreError, DeviceBleOutputSink, DeviceId,
+};
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 
 /// Provider used by the Tauri BLE transport to perform platform writes.
 #[async_trait]
@@ -65,11 +68,108 @@ impl BleTransport for TauriBleTransport {
     }
 }
 
+/// Output sink that queues Core BLE writes onto an async Tauri BLE transport.
+#[derive(Clone)]
+pub struct TauriBleOutputSink {
+    sender: mpsc::UnboundedSender<TauriBleOutputCommand>,
+}
+
+impl TauriBleOutputSink {
+    /// Spawns an output sink worker.
+    #[must_use]
+    pub fn spawn(transport: Arc<dyn BleTransport + Send + Sync>) -> Self {
+        Self::spawn_with_events(transport, None)
+    }
+
+    /// Spawns an output sink worker with an optional event sink for tests.
+    #[must_use]
+    pub fn spawn_with_event_sink(
+        transport: Arc<dyn BleTransport + Send + Sync>,
+        event_sink: mpsc::UnboundedSender<TauriBleOutputEvent>,
+    ) -> Self {
+        Self::spawn_with_events(transport, Some(event_sink))
+    }
+
+    fn spawn_with_events(
+        transport: Arc<dyn BleTransport + Send + Sync>,
+        event_sink: Option<mpsc::UnboundedSender<TauriBleOutputEvent>>,
+    ) -> Self {
+        let (sender, mut receiver) = mpsc::unbounded_channel::<TauriBleOutputCommand>();
+
+        tokio::spawn(async move {
+            while let Some(command) = receiver.recv().await {
+                let event = match transport.write(command.write.clone()).await {
+                    Ok(()) => TauriBleOutputEvent::Written {
+                        device_id: command.device_id,
+                        characteristic: command.write.characteristic,
+                    },
+                    Err(error) => TauriBleOutputEvent::Failed {
+                        device_id: command.device_id,
+                        error: error.to_string(),
+                    },
+                };
+
+                if let Some(event_sink) = &event_sink {
+                    let _ = event_sink.send(event);
+                }
+            }
+        });
+
+        Self { sender }
+    }
+}
+
+impl fmt::Debug for TauriBleOutputSink {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TauriBleOutputSink").finish_non_exhaustive()
+    }
+}
+
+impl DeviceBleOutputSink for TauriBleOutputSink {
+    fn write(&self, device_id: &DeviceId, write: BleWrite) -> Result<(), CoreError> {
+        self.sender
+            .send(TauriBleOutputCommand {
+                device_id: device_id.clone(),
+                write,
+            })
+            .map_err(|_| CoreError::Transport("tauri BLE output sink is closed".to_owned()))
+    }
+}
+
+/// Command queued from Core output controllers to the Tauri transport worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TauriBleOutputCommand {
+    /// Target device id.
+    pub device_id: DeviceId,
+    /// BLE write payload.
+    pub write: BleWrite,
+}
+
+/// Event emitted by the Tauri output sink worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TauriBleOutputEvent {
+    /// Write was accepted by the transport provider.
+    Written {
+        /// Target device id.
+        device_id: DeviceId,
+        /// Target characteristic.
+        characteristic: BleCharacteristic,
+    },
+    /// Write failed in the transport provider.
+    Failed {
+        /// Target device id.
+        device_id: DeviceId,
+        /// Rendered error message.
+        error: String,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
 
     use super::*;
+    use tokio::time::{timeout, Duration};
 
     #[derive(Debug, Default)]
     struct RecordingTransportProvider {
@@ -126,5 +226,32 @@ mod tests {
             *provider.subscriptions.lock().unwrap(),
             vec![BleCharacteristic::CoyoteV3Notify]
         );
+    }
+
+    #[tokio::test]
+    async fn output_sink_queues_writes_to_transport() {
+        let provider = Arc::new(RecordingTransportProvider::default());
+        let transport = Arc::new(TauriBleTransport::with_provider(provider.clone()));
+        let (event_sender, mut events) = mpsc::unbounded_channel();
+        let sink = TauriBleOutputSink::spawn_with_event_sink(transport, event_sender);
+
+        sink.write(
+            &DeviceId::new("coyote-v3"),
+            BleWrite::new(BleCharacteristic::CoyoteV3Write, [0xB0]),
+        )
+        .unwrap();
+
+        let event = timeout(Duration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event,
+            TauriBleOutputEvent::Written {
+                device_id: DeviceId::new("coyote-v3"),
+                characteristic: BleCharacteristic::CoyoteV3Write,
+            }
+        );
+        assert_eq!(provider.writes.lock().unwrap().len(), 1);
     }
 }

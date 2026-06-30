@@ -6,8 +6,8 @@ use std::{
 use arcflow_core::{
     execute_plugin_registry_external_request, execute_script_documents_external_request,
     is_plugin_registry_external_request, is_script_documents_external_request, ArcFlowCore,
-    CoreScriptActionExecutor, DeviceDiscoveryController, DeviceModel, DeviceOutputController,
-    DeviceScanResult, DeviceStatus, NoopDeviceOutputController, PluginBundle, PluginRegistryEntry,
+    CoreScriptActionExecutor, CoyoteV3OutputController, DeviceDiscoveryController, DeviceModel,
+    DeviceOutputController, DeviceScanResult, DeviceStatus, PluginBundle, PluginRegistryEntry,
     PluginRegistryPersistence, SafetyLimits, ScriptDocumentEntry, ScriptDocumentPersistence,
     ScriptWorkerQueue, StopOutputResult, StorageScriptRunner,
 };
@@ -17,7 +17,7 @@ use arcflow_external_control::{
 };
 use arcflow_script::ScriptCompiler;
 use arcflow_storage::Storage;
-use arcflow_tauri_platform::TauriBleDiscoveryController;
+use arcflow_tauri_platform::{TauriBleDiscoveryController, TauriBleOutputSink, TauriBleTransport};
 use serde::Serialize;
 use tauri::Manager;
 
@@ -450,10 +450,13 @@ pub fn run() {
             std::fs::create_dir_all(&app_data_dir)?;
             let database_path = app_data_dir.join("arcflow.sqlite3");
             let storage = Arc::new(Mutex::new(Storage::open(&database_path)?));
+            let safety_limits = SafetyLimits::conservative();
             let discovery_controller: Arc<dyn DeviceDiscoveryController> =
                 Arc::new(TauriBleDiscoveryController::unsupported());
+            let ble_transport = Arc::new(TauriBleTransport::unsupported());
+            let output_sink = TauriBleOutputSink::spawn(ble_transport);
             let output_controller: Arc<dyn DeviceOutputController> =
-                Arc::new(NoopDeviceOutputController);
+                Arc::new(CoyoteV3OutputController::new(safety_limits, output_sink));
             let script_actions = CoreScriptActionExecutor::new(
                 Arc::clone(&discovery_controller),
                 Arc::clone(&output_controller),
@@ -471,7 +474,7 @@ pub fn run() {
             });
             app.manage(CoreState {
                 core: ArcFlowCore::with_controllers(
-                    SafetyLimits::conservative(),
+                    safety_limits,
                     discovery_controller,
                     output_controller,
                     Arc::new(script_runner),

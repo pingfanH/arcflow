@@ -8,8 +8,6 @@ publish = false
 [dependencies]
 arcflow-core.workspace = true
 async-trait.workspace = true
-
-[dev-dependencies]
 tokio.workspace = true
 
 [lib]
