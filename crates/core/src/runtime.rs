@@ -3,12 +3,34 @@
 use std::{fmt, sync::Arc};
 
 use arcflow_external_control::{ClientSession, JsonRpcRequest};
+use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::{
     authorized_core_command_from_external_request, BleAdapterStatus, CoreCommand, CoreError,
     DeviceId, DeviceScanResult, DeviceStatus, SafetyLimits, StopOutputResult,
 };
+
+/// Discovery controller used by Core to scan for supported devices.
+#[async_trait]
+pub trait DeviceDiscoveryController: fmt::Debug + Send + Sync {
+    /// Scans for supported devices through the platform BLE Adapter.
+    async fn scan_devices(&self) -> Result<DeviceScanResult, CoreError>;
+}
+
+/// Discovery controller used before a platform BLE Adapter is attached.
+#[derive(Debug, Default)]
+pub struct NoopDeviceDiscoveryController;
+
+#[async_trait]
+impl DeviceDiscoveryController for NoopDeviceDiscoveryController {
+    async fn scan_devices(&self) -> Result<DeviceScanResult, CoreError> {
+        Ok(DeviceScanResult::new(
+            BleAdapterStatus::Unsupported,
+            Vec::new(),
+        ))
+    }
+}
 
 /// Output controller used by Core to stop active device sessions.
 pub trait DeviceOutputController: fmt::Debug + Send + Sync {
@@ -30,6 +52,7 @@ impl DeviceOutputController for NoopDeviceOutputController {
 #[derive(Debug, Clone)]
 pub struct ArcFlowCore {
     safety_limits: SafetyLimits,
+    discovery_controller: Arc<dyn DeviceDiscoveryController>,
     output_controller: Arc<dyn DeviceOutputController>,
 }
 
@@ -37,7 +60,11 @@ impl ArcFlowCore {
     /// Constructs a core runtime with explicit safety limits.
     #[must_use]
     pub fn new(safety_limits: SafetyLimits) -> Self {
-        Self::with_output_controller(safety_limits, Arc::new(NoopDeviceOutputController))
+        Self::with_controllers(
+            safety_limits,
+            Arc::new(NoopDeviceDiscoveryController),
+            Arc::new(NoopDeviceOutputController),
+        )
     }
 
     /// Constructs a core runtime with an explicit output controller.
@@ -46,8 +73,23 @@ impl ArcFlowCore {
         safety_limits: SafetyLimits,
         output_controller: Arc<dyn DeviceOutputController>,
     ) -> Self {
+        Self::with_controllers(
+            safety_limits,
+            Arc::new(NoopDeviceDiscoveryController),
+            output_controller,
+        )
+    }
+
+    /// Constructs a core runtime with explicit discovery and output controllers.
+    #[must_use]
+    pub fn with_controllers(
+        safety_limits: SafetyLimits,
+        discovery_controller: Arc<dyn DeviceDiscoveryController>,
+        output_controller: Arc<dyn DeviceOutputController>,
+    ) -> Self {
         Self {
             safety_limits,
+            discovery_controller,
             output_controller,
         }
     }
@@ -63,9 +105,8 @@ impl ArcFlowCore {
     /// The current scaffold has not attached a platform Adapter yet, so it
     /// returns an explicit unsupported Adapter status instead of reaching into
     /// React or platform APIs.
-    #[must_use]
-    pub fn scan_devices(&self) -> DeviceScanResult {
-        DeviceScanResult::new(BleAdapterStatus::Unsupported, Vec::new())
+    pub async fn scan_devices(&self) -> Result<DeviceScanResult, CoreError> {
+        self.discovery_controller.scan_devices().await
     }
 
     /// Stops all active output sessions known by Core.
@@ -74,21 +115,21 @@ impl ArcFlowCore {
     }
 
     /// Executes an external-control request after capability authorization.
-    pub fn execute_external_request(
+    pub async fn execute_external_request(
         &self,
         session: &ClientSession,
         request: &JsonRpcRequest,
     ) -> Result<Value, CoreError> {
         let command = authorized_core_command_from_external_request(session, request)?;
 
-        self.execute_command(command)
+        self.execute_command(command).await
     }
 
     /// Executes one already-authorized core command.
-    pub fn execute_command(&self, command: CoreCommand) -> Result<Value, CoreError> {
+    pub async fn execute_command(&self, command: CoreCommand) -> Result<Value, CoreError> {
         match command {
             CoreCommand::ReadDeviceStatus { device_id } => {
-                Ok(self.device_status_payload(&device_id))
+                self.device_status_payload(&device_id).await
             }
             CoreCommand::SubmitCoyoteV3Window { device_id, .. } => Ok(json!({
                 "accepted": true,
@@ -118,20 +159,20 @@ impl ArcFlowCore {
         }
     }
 
-    fn device_status_payload(&self, device_id: &DeviceId) -> Value {
-        let scan = self.scan_devices();
+    async fn device_status_payload(&self, device_id: &DeviceId) -> Result<Value, CoreError> {
+        let scan = self.scan_devices().await?;
         let matching_device = scan
             .devices
             .iter()
             .find(|device| device.id.as_str() == device_id.as_str());
 
         match matching_device {
-            Some(device) => device_status_payload(device, scan.adapter_status),
-            None => json!({
+            Some(device) => Ok(device_status_payload(device, scan.adapter_status)),
+            None => Ok(json!({
                 "deviceId": device_id.as_str(),
                 "connected": false,
                 "adapterStatus": scan.adapter_status.as_str(),
-            }),
+            })),
         }
     }
 }
@@ -148,13 +189,44 @@ mod tests {
     use arcflow_external_control::{ClientHello, GatewayPolicy, RequestId, PROTOCOL_VERSION};
     use arcflow_plugin_runtime::Capability;
 
-    #[test]
-    fn scan_devices_reports_missing_platform_adapter() {
+    #[tokio::test]
+    async fn scan_devices_reports_missing_platform_adapter() {
         let core = ArcFlowCore::default();
-        let scan = core.scan_devices();
+        let scan = core.scan_devices().await.unwrap();
 
         assert_eq!(scan.adapter_status, BleAdapterStatus::Unsupported);
         assert!(scan.devices.is_empty());
+    }
+
+    #[tokio::test]
+    async fn scan_devices_uses_discovery_controller() {
+        #[derive(Debug)]
+        struct FakeDiscoveryController;
+
+        #[async_trait]
+        impl DeviceDiscoveryController for FakeDiscoveryController {
+            async fn scan_devices(&self) -> Result<DeviceScanResult, CoreError> {
+                Ok(DeviceScanResult::new(
+                    BleAdapterStatus::Ready,
+                    vec![DeviceStatus {
+                        id: DeviceId::new("coyote-v3"),
+                        model: crate::DeviceModel::CoyoteV3,
+                        battery_percent: Some(87),
+                        connected: true,
+                    }],
+                ))
+            }
+        }
+
+        let core = ArcFlowCore::with_controllers(
+            SafetyLimits::conservative(),
+            Arc::new(FakeDiscoveryController),
+            Arc::new(NoopDeviceOutputController),
+        );
+        let scan = core.scan_devices().await.unwrap();
+
+        assert_eq!(scan.adapter_status, BleAdapterStatus::Ready);
+        assert_eq!(scan.devices[0].id, DeviceId::new("coyote-v3"));
     }
 
     #[test]
@@ -185,8 +257,8 @@ mod tests {
         assert_eq!(result.stopped_devices, vec![DeviceId::new("coyote-v3")]);
     }
 
-    #[test]
-    fn executes_external_device_status_request() {
+    #[tokio::test]
+    async fn executes_external_device_status_request() {
         let core = ArcFlowCore::default();
         let session = GatewayPolicy::local_default()
             .accept(ClientHello {
@@ -201,7 +273,10 @@ mod tests {
             Some(json!({ "deviceId": "coyote-v3" })),
         );
 
-        let result = core.execute_external_request(&session, &request).unwrap();
+        let result = core
+            .execute_external_request(&session, &request)
+            .await
+            .unwrap();
 
         assert_eq!(
             result,

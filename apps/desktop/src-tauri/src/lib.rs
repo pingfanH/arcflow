@@ -74,8 +74,13 @@ fn app_status() -> AppStatus {
 }
 
 #[tauri::command]
-fn scan_devices(state: tauri::State<'_, CoreState>) -> DeviceScanResponse {
-    device_scan_response(state.core.scan_devices())
+async fn scan_devices(state: tauri::State<'_, CoreState>) -> Result<DeviceScanResponse, String> {
+    state
+        .core
+        .scan_devices()
+        .await
+        .map(device_scan_response)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -191,7 +196,7 @@ fn external_request_handler(core: ArcFlowCore) -> WsRequestHandler {
         Box::pin(async move {
             let id = request.id.clone();
 
-            match core.execute_external_request(&session, &request) {
+            match core.execute_external_request(&session, &request).await {
                 Ok(result) => JsonRpcResponse::ok(id, result),
                 Err(error) => JsonRpcResponse::error(id, RpcError::new(-32000, error.to_string())),
             }
