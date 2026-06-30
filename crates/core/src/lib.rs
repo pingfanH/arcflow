@@ -14,6 +14,7 @@ pub mod device;
 pub mod error;
 pub mod external;
 pub mod plugin_api;
+pub mod plugin_registry_persistence;
 pub mod runtime;
 pub mod safety;
 pub mod session;
@@ -33,6 +34,7 @@ pub use external::{
     required_capability_for_external_request,
 };
 pub use plugin_api::{PluginApi, PluginApiError};
+pub use plugin_registry_persistence::{PluginRegistryPersistence, PluginRegistryPersistenceError};
 pub use runtime::{
     ArcFlowCore, DeviceDiscoveryController, DeviceOutputController, NoopDeviceDiscoveryController,
     NoopDeviceOutputController,
