@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
-//! WebSocket external-control protocol model for ArcFlow.
+//! WebSocket external-control protocol and gateway transport for ArcFlow.
 //!
 //! This crate models the wire messages and security posture for external
-//! software. The WebSocket server implementation belongs in Rust Core.
+//! software. Core still owns command authorization and execution.
 
 pub mod protocol;
 pub mod security;
@@ -16,5 +16,8 @@ pub use protocol::{
     PROTOCOL_VERSION,
 };
 pub use security::{ExposureMode, DEFAULT_LOCAL_BIND};
-pub use server::{AcceptedSession, WsGateway, WsGatewayError};
+pub use server::{
+    AcceptedClient, AcceptedSession, WsGateway, WsGatewayError, WsGatewayHandle,
+    WsGatewayRuntimeStatus, WsGatewayService, WsRequestHandler,
+};
 pub use session::{ClientSession, GatewayPolicy, SessionError};

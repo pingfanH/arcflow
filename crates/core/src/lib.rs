@@ -21,6 +21,9 @@ pub use command::CoreCommand;
 pub use coyote::CoyoteV3CommandBuilder;
 pub use device::{DeviceId, DeviceModel, DeviceStatus};
 pub use error::CoreError;
-pub use external::core_command_from_external_request;
+pub use external::{
+    authorized_core_command_from_external_request, core_command_from_external_request,
+    required_capability_for_external_request,
+};
 pub use safety::SafetyLimits;
 pub use session::DeviceSession;

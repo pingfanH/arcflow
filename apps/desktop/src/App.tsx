@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   Activity,
@@ -7,6 +7,7 @@ import {
   Gauge,
   Pause,
   Play,
+  Power,
   Puzzle,
   Radio,
   RefreshCw,
@@ -25,6 +26,13 @@ type AppStatus = {
   maxWaveStrength: number;
 };
 
+type ExternalControlStatus = {
+  running: boolean;
+  bindAddress: string | null;
+  acceptedSessions: number;
+  activeSessions: number;
+};
+
 const navItems = [
   { id: "device", label: "Device", icon: Bluetooth },
   { id: "wave", label: "Wave", icon: Activity },
@@ -34,13 +42,29 @@ const navItems = [
 
 const waveBars = [28, 44, 62, 76, 68, 52, 34, 48, 72, 84, 58, 38];
 
+const stoppedExternalControl: ExternalControlStatus = {
+  running: false,
+  bindAddress: null,
+  acceptedSessions: 0,
+  activeSessions: 0,
+};
+
 function App() {
   const [activeTab, setActiveTab] = useState<(typeof navItems)[number]["id"]>("device");
   const [status, setStatus] = useState<AppStatus | null>(null);
+  const [externalStatus, setExternalStatus] =
+    useState<ExternalControlStatus>(stoppedExternalControl);
+  const [externalBusy, setExternalBusy] = useState(false);
   const [deviceOnline, setDeviceOnline] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [channelA, setChannelA] = useState(12);
   const [channelB, setChannelB] = useState(0);
+
+  const refreshExternalStatus = useCallback(() => {
+    invoke<ExternalControlStatus>("external_control_status")
+      .then(setExternalStatus)
+      .catch(() => setExternalStatus(stoppedExternalControl));
+  }, []);
 
   useEffect(() => {
     invoke<AppStatus>("app_status")
@@ -54,7 +78,24 @@ function App() {
           maxWaveStrength: 30,
         }),
       );
-  }, []);
+    refreshExternalStatus();
+  }, [refreshExternalStatus]);
+
+  const startExternalControl = () => {
+    setExternalBusy(true);
+    invoke<ExternalControlStatus>("start_external_control")
+      .then(setExternalStatus)
+      .catch(() => setExternalStatus(stoppedExternalControl))
+      .finally(() => setExternalBusy(false));
+  };
+
+  const stopExternalControl = () => {
+    setExternalBusy(true);
+    invoke<ExternalControlStatus>("stop_external_control")
+      .then(setExternalStatus)
+      .catch(() => setExternalStatus(stoppedExternalControl))
+      .finally(() => setExternalBusy(false));
+  };
 
   const activeLabel = useMemo(
     () => navItems.find((item) => item.id === activeTab)?.label ?? "Device",
@@ -202,11 +243,12 @@ function App() {
                 value={(status?.pluginRuntimes ?? ["wasm", "javascript"]).join(" / ")}
                 tone="amber"
               />
-              <StatusPanel
-                icon={Radio}
-                label="External WS"
-                value={status?.externalControlBind ?? "127.0.0.1:0"}
-                tone="sky"
+              <ExternalControlPanel
+                defaultBind={status?.externalControlBind ?? "127.0.0.1:0"}
+                busy={externalBusy}
+                status={externalStatus}
+                onStart={startExternalControl}
+                onStop={stopExternalControl}
               />
               <StatusPanel
                 icon={Cable}
@@ -223,6 +265,66 @@ function App() {
         </section>
       </div>
     </main>
+  );
+}
+
+type ExternalControlPanelProps = {
+  defaultBind: string;
+  busy: boolean;
+  status: ExternalControlStatus;
+  onStart: () => void;
+  onStop: () => void;
+};
+
+function ExternalControlPanel({
+  defaultBind,
+  busy,
+  status,
+  onStart,
+  onStop,
+}: ExternalControlPanelProps) {
+  const running = status.running;
+  const bind = status.bindAddress ?? defaultBind;
+
+  return (
+    <div className="rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-3">
+        <div
+          className={`grid size-10 place-items-center rounded-lg ${
+            running ? "bg-sky-50 text-sky-700" : "bg-zinc-100 text-zinc-600"
+          }`}
+        >
+          <Radio size={18} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-zinc-950">External WS</div>
+          <div className="truncate text-sm text-zinc-500">{running ? bind : "Stopped"}</div>
+        </div>
+        <button
+          className={`grid size-9 place-items-center rounded-lg border text-sm transition ${
+            running
+              ? "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+              : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
+          } disabled:cursor-not-allowed disabled:opacity-50`}
+          disabled={busy}
+          title={running ? "Stop external WebSocket" : "Start external WebSocket"}
+          type="button"
+          onClick={running ? onStop : onStart}
+        >
+          <Power size={16} />
+        </button>
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+        <div className="rounded-lg bg-zinc-50 px-2.5 py-2">
+          <div className="font-medium text-zinc-950">{status.activeSessions}</div>
+          <div className="text-zinc-500">Active</div>
+        </div>
+        <div className="rounded-lg bg-zinc-50 px-2.5 py-2">
+          <div className="font-medium text-zinc-950">{status.acceptedSessions}</div>
+          <div className="text-zinc-500">Accepted</div>
+        </div>
+      </div>
+    </div>
   );
 }
 
