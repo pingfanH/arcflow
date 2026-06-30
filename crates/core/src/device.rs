@@ -1,5 +1,8 @@
 //! Device identity and status types.
 
+use arcflow_protocol::coyote::v3::StrengthModes;
+use arcflow_wave::CoyoteV3Window;
+
 /// Stable ArcFlow device identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DeviceId(String);
@@ -100,5 +103,64 @@ impl StopOutputResult {
     #[must_use]
     pub fn new(stopped_devices: Vec<DeviceId>) -> Self {
         Self { stopped_devices }
+    }
+}
+
+/// Output request for one Coyote V3 100ms window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoyoteV3OutputRequest {
+    /// Target device id.
+    pub device_id: DeviceId,
+    /// Wave window to write.
+    pub window: CoyoteV3Window,
+    /// Coyote V3 B0 sequence number.
+    pub sequence: u8,
+    /// Strength modes for channel A and B.
+    pub strength_modes: StrengthModes,
+    /// Channel A strength command value.
+    pub a_strength: u8,
+    /// Channel B strength command value.
+    pub b_strength: u8,
+}
+
+impl CoyoteV3OutputRequest {
+    /// Constructs a Coyote V3 output request.
+    #[must_use]
+    pub fn new(
+        device_id: DeviceId,
+        window: CoyoteV3Window,
+        sequence: u8,
+        strength_modes: StrengthModes,
+        a_strength: u8,
+        b_strength: u8,
+    ) -> Self {
+        Self {
+            device_id,
+            window,
+            sequence,
+            strength_modes,
+            a_strength,
+            b_strength,
+        }
+    }
+}
+
+/// Result of submitting one output window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmitOutputResult {
+    /// Device id that received the request.
+    pub device_id: DeviceId,
+    /// Whether the controller accepted the request.
+    pub accepted: bool,
+}
+
+impl SubmitOutputResult {
+    /// Constructs a submit-output result.
+    #[must_use]
+    pub fn new(device_id: DeviceId, accepted: bool) -> Self {
+        Self {
+            device_id,
+            accepted,
+        }
     }
 }

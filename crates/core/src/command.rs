@@ -1,5 +1,6 @@
 //! Core command model.
 
+use arcflow_protocol::coyote::v3::StrengthModes;
 use arcflow_wave::CoyoteV3Window;
 
 use crate::DeviceId;
@@ -18,6 +19,14 @@ pub enum CoreCommand {
         device_id: DeviceId,
         /// Wave window.
         window: CoyoteV3Window,
+        /// Coyote V3 B0 sequence number.
+        sequence: u8,
+        /// Strength modes for channel A and B.
+        strength_modes: StrengthModes,
+        /// Channel A strength command value.
+        a_strength: u8,
+        /// Channel B strength command value.
+        b_strength: u8,
     },
     /// Stop all output for a device.
     StopOutput {

@@ -8,7 +8,8 @@ use serde_json::{json, Value};
 
 use crate::{
     authorized_core_command_from_external_request, BleAdapterStatus, CoreCommand, CoreError,
-    DeviceId, DeviceScanResult, DeviceStatus, SafetyLimits, StopOutputResult,
+    CoyoteV3OutputRequest, DeviceId, DeviceScanResult, DeviceStatus, SafetyLimits,
+    StopOutputResult, SubmitOutputResult,
 };
 
 /// Discovery controller used by Core to scan for supported devices.
@@ -34,6 +35,12 @@ impl DeviceDiscoveryController for NoopDeviceDiscoveryController {
 
 /// Output controller used by Core to stop active device sessions.
 pub trait DeviceOutputController: fmt::Debug + Send + Sync {
+    /// Submits one Coyote V3 wave window to the output controller.
+    fn submit_coyote_v3_window(
+        &self,
+        request: CoyoteV3OutputRequest,
+    ) -> Result<SubmitOutputResult, CoreError>;
+
     /// Stops output on every active session known to the controller.
     fn stop_all_output(&self) -> Result<StopOutputResult, CoreError>;
 }
@@ -43,6 +50,15 @@ pub trait DeviceOutputController: fmt::Debug + Send + Sync {
 pub struct NoopDeviceOutputController;
 
 impl DeviceOutputController for NoopDeviceOutputController {
+    fn submit_coyote_v3_window(
+        &self,
+        _request: CoyoteV3OutputRequest,
+    ) -> Result<SubmitOutputResult, CoreError> {
+        Err(CoreError::Transport(
+            "no device output controller attached".to_owned(),
+        ))
+    }
+
     fn stop_all_output(&self) -> Result<StopOutputResult, CoreError> {
         Ok(StopOutputResult::new(Vec::new()))
     }
@@ -114,6 +130,14 @@ impl ArcFlowCore {
         self.output_controller.stop_all_output()
     }
 
+    /// Submits one Coyote V3 output window through the active output controller.
+    pub fn submit_coyote_v3_window(
+        &self,
+        request: CoyoteV3OutputRequest,
+    ) -> Result<SubmitOutputResult, CoreError> {
+        self.output_controller.submit_coyote_v3_window(request)
+    }
+
     /// Executes an external-control request after capability authorization.
     pub async fn execute_external_request(
         &self,
@@ -131,11 +155,29 @@ impl ArcFlowCore {
             CoreCommand::ReadDeviceStatus { device_id } => {
                 self.device_status_payload(&device_id).await
             }
-            CoreCommand::SubmitCoyoteV3Window { device_id, .. } => Ok(json!({
-                "accepted": true,
-                "command": "wave.submitWindow",
-                "deviceId": device_id.as_str(),
-            })),
+            CoreCommand::SubmitCoyoteV3Window {
+                device_id,
+                window,
+                sequence,
+                strength_modes,
+                a_strength,
+                b_strength,
+            } => {
+                let result = self.submit_coyote_v3_window(CoyoteV3OutputRequest::new(
+                    device_id,
+                    window,
+                    sequence,
+                    strength_modes,
+                    a_strength,
+                    b_strength,
+                ))?;
+
+                Ok(json!({
+                    "accepted": result.accepted,
+                    "command": "wave.submitWindow",
+                    "deviceId": result.device_id.as_str(),
+                }))
+            }
             CoreCommand::StopOutput { device_id } => {
                 let result = self.stop_all_output()?;
                 let stopped = result
@@ -188,6 +230,9 @@ mod tests {
     use super::*;
     use arcflow_external_control::{ClientHello, GatewayPolicy, RequestId, PROTOCOL_VERSION};
     use arcflow_plugin_runtime::Capability;
+    use arcflow_protocol::coyote::v3::{StrengthMode, StrengthModes};
+    use arcflow_wave::{ChannelOutput, ChannelWindow, CoyoteV3Window, WavePoint};
+    use std::sync::Mutex;
 
     #[tokio::test]
     async fn scan_devices_reports_missing_platform_adapter() {
@@ -243,6 +288,13 @@ mod tests {
         struct FakeOutputController;
 
         impl DeviceOutputController for FakeOutputController {
+            fn submit_coyote_v3_window(
+                &self,
+                _request: CoyoteV3OutputRequest,
+            ) -> Result<SubmitOutputResult, CoreError> {
+                Ok(SubmitOutputResult::new(DeviceId::new("coyote-v3"), true))
+            }
+
             fn stop_all_output(&self) -> Result<StopOutputResult, CoreError> {
                 Ok(StopOutputResult::new(vec![DeviceId::new("coyote-v3")]))
             }
@@ -255,6 +307,66 @@ mod tests {
         let result = core.stop_all_output().unwrap();
 
         assert_eq!(result.stopped_devices, vec![DeviceId::new("coyote-v3")]);
+    }
+
+    #[tokio::test]
+    async fn submit_coyote_v3_window_uses_output_controller() {
+        #[derive(Debug, Default)]
+        struct FakeOutputController {
+            requests: Mutex<Vec<CoyoteV3OutputRequest>>,
+        }
+
+        impl DeviceOutputController for FakeOutputController {
+            fn submit_coyote_v3_window(
+                &self,
+                request: CoyoteV3OutputRequest,
+            ) -> Result<SubmitOutputResult, CoreError> {
+                let device_id = request.device_id.clone();
+                self.requests.lock().unwrap().push(request);
+                Ok(SubmitOutputResult::new(device_id, true))
+            }
+
+            fn stop_all_output(&self) -> Result<StopOutputResult, CoreError> {
+                Ok(StopOutputResult::new(Vec::new()))
+            }
+        }
+
+        let output_controller = Arc::new(FakeOutputController::default());
+        let core = ArcFlowCore::with_output_controller(
+            SafetyLimits::conservative(),
+            output_controller.clone(),
+        );
+        let command = CoreCommand::SubmitCoyoteV3Window {
+            device_id: DeviceId::new("coyote-v3"),
+            window: safe_window(),
+            sequence: 3,
+            strength_modes: StrengthModes::new(StrengthMode::Unchanged, StrengthMode::Unchanged),
+            a_strength: 0,
+            b_strength: 0,
+        };
+
+        let result = core.execute_command(command).await.unwrap();
+
+        assert_eq!(
+            result,
+            json!({
+                "accepted": true,
+                "command": "wave.submitWindow",
+                "deviceId": "coyote-v3",
+            })
+        );
+        assert_eq!(output_controller.requests.lock().unwrap()[0].sequence, 3);
+    }
+
+    fn safe_window() -> CoyoteV3Window {
+        let channel = ChannelWindow::new([
+            WavePoint::new(10, 0).unwrap(),
+            WavePoint::new(10, 10).unwrap(),
+            WavePoint::new(10, 20).unwrap(),
+            WavePoint::new(10, 30).unwrap(),
+        ]);
+
+        CoyoteV3Window::new(ChannelOutput::Window(channel), ChannelOutput::Disabled)
     }
 
     #[tokio::test]
