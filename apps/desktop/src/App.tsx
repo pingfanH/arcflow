@@ -5,6 +5,7 @@ import {
   Bluetooth,
   Cable,
   Database,
+  FileCode,
   Gauge,
   Pause,
   Play,
@@ -12,10 +13,12 @@ import {
   Puzzle,
   Radio,
   RefreshCw,
+  Save,
   ShieldCheck,
   Square,
   ToggleLeft,
   ToggleRight,
+  Trash2,
   Wifi,
   Zap,
 } from "lucide-react";
@@ -71,9 +74,24 @@ type PluginRegistryResponse = {
   plugins: PluginRegistryEntry[];
 };
 
+type ScriptDocumentRecord = {
+  scriptId: string;
+  documentJson: string;
+};
+
+type ScriptsResponse = {
+  scripts: ScriptDocumentRecord[];
+};
+
+type ScriptRunResponse = {
+  scriptId: string;
+  queued: boolean;
+};
+
 const navItems = [
   { id: "device", label: "Device", icon: Bluetooth },
   { id: "wave", label: "Wave", icon: Activity },
+  { id: "scripts", label: "Scripts", icon: FileCode },
   { id: "plugins", label: "Plugins", icon: Puzzle },
   { id: "external", label: "External", icon: Wifi },
 ] as const;
@@ -101,6 +119,10 @@ const emptyPluginRegistry: PluginRegistryResponse = {
   plugins: [],
 };
 
+const emptyScripts: ScriptsResponse = {
+  scripts: [],
+};
+
 const starterPluginManifest = {
   id: "dev.arcflow.pulse-tools",
   name: "Pulse Tools",
@@ -109,6 +131,15 @@ const starterPluginManifest = {
   entry: "dist/plugin.wasm",
   apiVersion: "1",
   capabilities: ["device.read", "storage.private"],
+};
+
+const starterScriptDocument = {
+  id: "script.demo.wait",
+  version: 1,
+  steps: [
+    { type: "wait", durationMs: 250 },
+    { type: "deviceStatus", deviceId: "coyote-v3" },
+  ],
 };
 
 function App() {
@@ -120,9 +151,12 @@ function App() {
   const [lastScan, setLastScan] = useState<DeviceScanResponse | null>(null);
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
   const [pluginRegistry, setPluginRegistry] = useState<PluginRegistryResponse | null>(null);
+  const [scripts, setScripts] = useState<ScriptsResponse | null>(null);
+  const [lastScriptRun, setLastScriptRun] = useState<ScriptRunResponse | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
   const [stopBusy, setStopBusy] = useState(false);
   const [pluginBusy, setPluginBusy] = useState(false);
+  const [scriptBusy, setScriptBusy] = useState(false);
   const [deviceOnline, setDeviceOnline] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [channelA, setChannelA] = useState(12);
@@ -138,6 +172,12 @@ function App() {
     invoke<PluginRegistryResponse>("plugin_registry")
       .then(setPluginRegistry)
       .catch(() => setPluginRegistry(emptyPluginRegistry));
+  }, []);
+
+  const refreshScripts = useCallback(() => {
+    invoke<ScriptsResponse>("list_scripts")
+      .then(setScripts)
+      .catch(() => setScripts(emptyScripts));
   }, []);
 
   useEffect(() => {
@@ -157,7 +197,8 @@ function App() {
       .then(setStorageStatus)
       .catch(() => setStorageStatus(fallbackStorageStatus));
     refreshPluginRegistry();
-  }, [refreshExternalStatus, refreshPluginRegistry]);
+    refreshScripts();
+  }, [refreshExternalStatus, refreshPluginRegistry, refreshScripts]);
 
   const startExternalControl = () => {
     setExternalBusy(true);
@@ -213,6 +254,36 @@ function App() {
       .then(setPluginRegistry)
       .catch(refreshPluginRegistry)
       .finally(() => setPluginBusy(false));
+  };
+
+  const saveStarterScript = () => {
+    setScriptBusy(true);
+    invoke<ScriptsResponse>("upsert_script", {
+      scriptId: starterScriptDocument.id,
+      documentJson: JSON.stringify(starterScriptDocument),
+    })
+      .then(setScripts)
+      .catch(refreshScripts)
+      .finally(() => setScriptBusy(false));
+  };
+
+  const runStoredScript = (scriptId: string) => {
+    setScriptBusy(true);
+    invoke<ScriptRunResponse>("run_script", { scriptId })
+      .then(setLastScriptRun)
+      .catch(() => setLastScriptRun(null))
+      .finally(() => setScriptBusy(false));
+  };
+
+  const deleteStoredScript = (scriptId: string) => {
+    setScriptBusy(true);
+    invoke<ScriptsResponse>("delete_script", { scriptId })
+      .then((result) => {
+        setScripts(result);
+        setLastScriptRun((current) => (current?.scriptId === scriptId ? null : current));
+      })
+      .catch(refreshScripts)
+      .finally(() => setScriptBusy(false));
   };
 
   const activeLabel = useMemo(
@@ -377,6 +448,15 @@ function App() {
                 onRefresh={refreshPluginRegistry}
                 onSetEnabled={setPluginEnabled}
               />
+              <ScriptsPanel
+                busy={scriptBusy}
+                scripts={scripts ?? emptyScripts}
+                lastRun={lastScriptRun}
+                onDelete={deleteStoredScript}
+                onRefresh={refreshScripts}
+                onRun={runStoredScript}
+                onSaveStarter={saveStarterScript}
+              />
               <StatusPanel
                 icon={Database}
                 label="Storage"
@@ -405,6 +485,104 @@ function App() {
         </section>
       </div>
     </main>
+  );
+}
+
+type ScriptsPanelProps = {
+  busy: boolean;
+  scripts: ScriptsResponse;
+  lastRun: ScriptRunResponse | null;
+  onDelete: (scriptId: string) => void;
+  onRefresh: () => void;
+  onRun: (scriptId: string) => void;
+  onSaveStarter: () => void;
+};
+
+function ScriptsPanel({
+  busy,
+  scripts,
+  lastRun,
+  onDelete,
+  onRefresh,
+  onRun,
+  onSaveStarter,
+}: ScriptsPanelProps) {
+  const starterSaved = scripts.scripts.some((script) => script.scriptId === starterScriptDocument.id);
+
+  return (
+    <div className="min-w-0 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-3">
+        <div className="grid size-10 place-items-center rounded-lg bg-sky-50 text-sky-700">
+          <FileCode size={18} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-zinc-950">Scripts</div>
+          <div className="truncate text-sm text-zinc-500">
+            {scripts.scripts.length} saved
+            {lastRun ? ` - ${lastRun.queued ? "Queued" : "Accepted"}` : ""}
+          </div>
+        </div>
+        <button
+          className="grid size-9 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={busy}
+          title="Refresh scripts"
+          type="button"
+          onClick={onRefresh}
+        >
+          <RefreshCw size={16} />
+        </button>
+        <button
+          className="grid size-9 place-items-center rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={busy || starterSaved}
+          title="Save starter script"
+          type="button"
+          onClick={onSaveStarter}
+        >
+          <Save size={16} />
+        </button>
+      </div>
+
+      <div className="mt-3 space-y-2">
+        {scripts.scripts.length === 0 ? (
+          <div className="rounded-lg bg-zinc-50 px-3 py-2 text-sm text-zinc-500">
+            No scripts saved
+          </div>
+        ) : (
+          scripts.scripts.map((script) => (
+            <div key={script.scriptId} className="rounded-lg bg-zinc-50 px-3 py-2">
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-zinc-950">
+                    {script.scriptId}
+                  </div>
+                  <div className="truncate text-xs text-zinc-500">
+                    {script.documentJson.length} bytes
+                  </div>
+                </div>
+                <button
+                  className="grid size-8 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={busy}
+                  title="Run script"
+                  type="button"
+                  onClick={() => onRun(script.scriptId)}
+                >
+                  <Play size={15} />
+                </button>
+                <button
+                  className="grid size-8 place-items-center rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={busy}
+                  title="Delete script"
+                  type="button"
+                  onClick={() => onDelete(script.scriptId)}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
   );
 }
 

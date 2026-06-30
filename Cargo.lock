@@ -69,6 +69,7 @@ version = "0.1.0"
 dependencies = [
  "arcflow-core",
  "arcflow-external-control",
+ "arcflow-script",
  "arcflow-storage",
  "serde",
  "serde_json",
