@@ -25,8 +25,9 @@ pub mod script_runner;
 pub mod session;
 
 pub use ble::{
-    BleAdvertisement, BleCharacteristic, BleDiscovery, BleNotification, BleTransport, BleWrite,
-    COYOTE_BATTERY_SERVICE_UUID, COYOTE_V2_SERVICE_UUID, COYOTE_V3_SERVICE_UUID,
+    BleAdvertisement, BleCharacteristic, BleDeviceDiscoveryController, BleDiscovery,
+    BleNotification, BleTransport, BleWrite, COYOTE_BATTERY_SERVICE_UUID, COYOTE_V2_SERVICE_UUID,
+    COYOTE_V3_SERVICE_UUID,
 };
 pub use command::CoreCommand;
 pub use coyote::CoyoteV3CommandBuilder;

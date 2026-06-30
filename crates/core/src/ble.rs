@@ -1,8 +1,13 @@
 //! Bluetooth transport Interface for Rust Core.
 
+use std::fmt;
+
 use async_trait::async_trait;
 
-use crate::{CoreError, DeviceId};
+use crate::{
+    BleAdapterStatus, CoreError, DeviceDiscoveryController, DeviceId, DeviceModel,
+    DeviceScanResult, DeviceStatus,
+};
 
 /// DG-LAB Coyote battery service short UUID.
 pub const COYOTE_BATTERY_SERVICE_UUID: u16 = 0x180A;
@@ -122,6 +127,59 @@ pub trait BleDiscovery {
     async fn scan(&self) -> Result<Vec<BleAdvertisement>, CoreError>;
 }
 
+/// Device discovery controller backed by a platform BLE discovery Adapter.
+#[derive(Debug, Clone)]
+pub struct BleDeviceDiscoveryController<D> {
+    discovery: D,
+}
+
+impl<D> BleDeviceDiscoveryController<D> {
+    /// Constructs a BLE-backed device discovery controller.
+    #[must_use]
+    pub fn new(discovery: D) -> Self {
+        Self { discovery }
+    }
+}
+
+#[async_trait]
+impl<D> DeviceDiscoveryController for BleDeviceDiscoveryController<D>
+where
+    D: BleDiscovery + fmt::Debug + Send + Sync,
+{
+    async fn scan_devices(&self) -> Result<DeviceScanResult, CoreError> {
+        let devices = self
+            .discovery
+            .scan()
+            .await?
+            .into_iter()
+            .filter_map(device_status_from_advertisement)
+            .collect();
+
+        Ok(DeviceScanResult::new(BleAdapterStatus::Ready, devices))
+    }
+}
+
+fn device_status_from_advertisement(advertisement: BleAdvertisement) -> Option<DeviceStatus> {
+    coyote_model_from_services(&advertisement.service_uuids).map(|model| DeviceStatus {
+        id: advertisement.device_id,
+        model,
+        battery_percent: None,
+        connected: true,
+    })
+}
+
+fn coyote_model_from_services(service_uuids: &[u16]) -> Option<DeviceModel> {
+    if service_uuids.contains(&COYOTE_V3_SERVICE_UUID) {
+        return Some(DeviceModel::CoyoteV3);
+    }
+
+    if service_uuids.contains(&COYOTE_V2_SERVICE_UUID) {
+        return Some(DeviceModel::CoyoteV2);
+    }
+
+    None
+}
+
 /// Asynchronous BLE transport Adapter seam.
 ///
 /// Platform-specific desktop and mobile implementations must satisfy this
@@ -174,28 +232,98 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct FakeDiscovery;
+    struct FakeDiscovery {
+        advertisements: Vec<BleAdvertisement>,
+    }
 
     #[async_trait]
     impl BleDiscovery for FakeDiscovery {
         async fn scan(&self) -> Result<Vec<BleAdvertisement>, CoreError> {
-            Ok(vec![BleAdvertisement::new(
-                DeviceId::new("device-1"),
-                Some("Coyote".to_owned()),
-                None,
-                vec![COYOTE_V3_SERVICE_UUID],
-            )])
+            Ok(self.advertisements.clone())
         }
     }
 
     #[tokio::test]
     async fn discovery_trait_returns_advertisements() {
-        let advertisements = FakeDiscovery.scan().await.unwrap();
+        let advertisements = FakeDiscovery {
+            advertisements: vec![BleAdvertisement::new(
+                DeviceId::new("device-1"),
+                Some("Coyote".to_owned()),
+                None,
+                vec![COYOTE_V3_SERVICE_UUID],
+            )],
+        }
+        .scan()
+        .await
+        .unwrap();
 
         assert_eq!(advertisements.len(), 1);
         assert_eq!(
             advertisements[0].service_uuids,
             vec![COYOTE_V3_SERVICE_UUID]
         );
+    }
+
+    #[tokio::test]
+    async fn ble_device_discovery_maps_coyote_advertisements() {
+        let controller = BleDeviceDiscoveryController::new(FakeDiscovery {
+            advertisements: vec![
+                BleAdvertisement::new(
+                    DeviceId::new("v3"),
+                    Some("Coyote".to_owned()),
+                    Some(-41),
+                    vec![COYOTE_V3_SERVICE_UUID],
+                ),
+                BleAdvertisement::new(
+                    DeviceId::new("v2"),
+                    Some("Coyote 2".to_owned()),
+                    Some(-50),
+                    vec![COYOTE_V2_SERVICE_UUID],
+                ),
+                BleAdvertisement::new(
+                    DeviceId::new("unknown"),
+                    Some("Other".to_owned()),
+                    Some(-60),
+                    vec![0xFFFF],
+                ),
+            ],
+        });
+
+        let scan = controller.scan_devices().await.unwrap();
+
+        assert_eq!(scan.adapter_status, BleAdapterStatus::Ready);
+        assert_eq!(
+            scan.devices,
+            vec![
+                DeviceStatus {
+                    id: DeviceId::new("v3"),
+                    model: DeviceModel::CoyoteV3,
+                    battery_percent: None,
+                    connected: true,
+                },
+                DeviceStatus {
+                    id: DeviceId::new("v2"),
+                    model: DeviceModel::CoyoteV2,
+                    battery_percent: None,
+                    connected: true,
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn ble_device_discovery_prefers_v3_when_services_overlap() {
+        let controller = BleDeviceDiscoveryController::new(FakeDiscovery {
+            advertisements: vec![BleAdvertisement::new(
+                DeviceId::new("hybrid"),
+                None,
+                None,
+                vec![COYOTE_V2_SERVICE_UUID, COYOTE_V3_SERVICE_UUID],
+            )],
+        });
+
+        let scan = controller.scan_devices().await.unwrap();
+
+        assert_eq!(scan.devices[0].model, DeviceModel::CoyoteV3);
     }
 }
