@@ -13,6 +13,7 @@ pub mod coyote;
 pub mod device;
 pub mod error;
 pub mod external;
+pub mod plugin_api;
 pub mod runtime;
 pub mod safety;
 pub mod session;
@@ -28,6 +29,7 @@ pub use external::{
     authorized_core_command_from_external_request, core_command_from_external_request,
     required_capability_for_external_request,
 };
+pub use plugin_api::{PluginApi, PluginApiError};
 pub use runtime::ArcFlowCore;
 pub use safety::SafetyLimits;
 pub use session::DeviceSession;

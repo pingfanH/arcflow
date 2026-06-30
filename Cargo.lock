@@ -54,6 +54,7 @@ dependencies = [
  "arcflow-external-control",
  "arcflow-plugin-runtime",
  "arcflow-protocol",
+ "arcflow-storage",
  "arcflow-wave",
  "async-trait",
  "serde",
