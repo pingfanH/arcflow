@@ -1,0 +1,14 @@
+[package]
+name = "arcflow-external-control"
+version = "0.1.0"
+edition.workspace = true
+description = "WebSocket external-control protocol model for ArcFlow."
+publish = false
+
+[dependencies]
+arcflow-plugin-runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lib]
+path = "src/lib.rs"

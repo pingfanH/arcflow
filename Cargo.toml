@@ -1,6 +1,20 @@
 [workspace]
-members = ["crates/protocol"]
+members = [
+    "crates/core",
+    "crates/external-control",
+    "crates/plugin-runtime",
+    "crates/protocol",
+    "crates/wave",
+]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
+
+[workspace.dependencies]
+arcflow-external-control = { path = "crates/external-control" }
+arcflow-plugin-runtime = { path = "crates/plugin-runtime" }
+arcflow-protocol = { path = "crates/protocol" }
+arcflow-wave = { path = "crates/wave" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -8,7 +8,13 @@ The project is being built as a Rust-first core with React frontends. Desktop an
 
 ```text
 crates/
+  core/          Core orchestration types and Rust-only device control surface.
+  external-control/
+                 WebSocket external-control protocol messages.
+  plugin-runtime/
+                 WASM/JS plugin manifest and capability model.
   protocol/      Bluetooth protocol frames and helpers.
+  wave/          Safe wave plans and protocol conversion.
 
 docs/
   agents/        Agent setup notes.
@@ -18,5 +24,5 @@ docs/
 Run the current Rust checks with:
 
 ```sh
-cargo test -p arcflow-protocol
+cargo test --workspace
 ```

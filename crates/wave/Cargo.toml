@@ -1,0 +1,12 @@
+[package]
+name = "arcflow-wave"
+version = "0.1.0"
+edition.workspace = true
+description = "Safe wave plans and protocol conversion for ArcFlow."
+publish = false
+
+[dependencies]
+arcflow-protocol.workspace = true
+
+[lib]
+path = "src/lib.rs"

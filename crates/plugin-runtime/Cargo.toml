@@ -1,0 +1,13 @@
+[package]
+name = "arcflow-plugin-runtime"
+version = "0.1.0"
+edition.workspace = true
+description = "Plugin manifest and capability model for ArcFlow."
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+[lib]
+path = "src/lib.rs"
