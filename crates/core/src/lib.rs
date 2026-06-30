@@ -18,7 +18,10 @@ pub mod runtime;
 pub mod safety;
 pub mod session;
 
-pub use ble::{BleCharacteristic, BleNotification, BleTransport, BleWrite};
+pub use ble::{
+    BleAdvertisement, BleCharacteristic, BleDiscovery, BleNotification, BleTransport, BleWrite,
+    COYOTE_BATTERY_SERVICE_UUID, COYOTE_V2_SERVICE_UUID, COYOTE_V3_SERVICE_UUID,
+};
 pub use command::CoreCommand;
 pub use coyote::CoyoteV3CommandBuilder;
 pub use device::{

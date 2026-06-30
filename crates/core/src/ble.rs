@@ -2,7 +2,14 @@
 
 use async_trait::async_trait;
 
-use crate::CoreError;
+use crate::{CoreError, DeviceId};
+
+/// DG-LAB Coyote battery service short UUID.
+pub const COYOTE_BATTERY_SERVICE_UUID: u16 = 0x180A;
+/// DG-LAB Coyote V2 service short UUID.
+pub const COYOTE_V2_SERVICE_UUID: u16 = 0x180B;
+/// DG-LAB Coyote V3 service short UUID.
+pub const COYOTE_V3_SERVICE_UUID: u16 = 0x180C;
 
 /// BLE characteristic known to ArcFlow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -19,6 +26,64 @@ pub enum BleCharacteristic {
     CoyoteV2PwmA34,
     /// Coyote V2 B waveform characteristic, UUID 0x1506 under service 0x180B.
     CoyoteV2PwmB34,
+}
+
+impl BleCharacteristic {
+    /// Returns the Bluetooth service short UUID containing this characteristic.
+    #[must_use]
+    pub fn service_short_uuid(self) -> u16 {
+        match self {
+            Self::CoyoteBattery => COYOTE_BATTERY_SERVICE_UUID,
+            Self::CoyoteV2PwmAb2 | Self::CoyoteV2PwmA34 | Self::CoyoteV2PwmB34 => {
+                COYOTE_V2_SERVICE_UUID
+            }
+            Self::CoyoteV3Write | Self::CoyoteV3Notify => COYOTE_V3_SERVICE_UUID,
+        }
+    }
+
+    /// Returns the characteristic short UUID.
+    #[must_use]
+    pub fn short_uuid(self) -> u16 {
+        match self {
+            Self::CoyoteBattery => 0x1500,
+            Self::CoyoteV2PwmAb2 => 0x1504,
+            Self::CoyoteV2PwmA34 => 0x1505,
+            Self::CoyoteV2PwmB34 => 0x1506,
+            Self::CoyoteV3Write => 0x150A,
+            Self::CoyoteV3Notify => 0x150B,
+        }
+    }
+}
+
+/// BLE advertisement discovered by a platform Adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BleAdvertisement {
+    /// Platform-stable device id.
+    pub device_id: DeviceId,
+    /// Advertised local name if present.
+    pub local_name: Option<String>,
+    /// Received signal strength indicator if the platform exposes it.
+    pub rssi: Option<i16>,
+    /// Advertised service short UUIDs.
+    pub service_uuids: Vec<u16>,
+}
+
+impl BleAdvertisement {
+    /// Constructs a BLE advertisement.
+    #[must_use]
+    pub fn new(
+        device_id: DeviceId,
+        local_name: Option<String>,
+        rssi: Option<i16>,
+        service_uuids: Vec<u16>,
+    ) -> Self {
+        Self {
+            device_id,
+            local_name,
+            rssi,
+            service_uuids,
+        }
+    }
 }
 
 /// BLE write request produced by Rust Core.
@@ -50,6 +115,13 @@ pub struct BleNotification {
     pub payload: Vec<u8>,
 }
 
+/// Asynchronous BLE discovery Adapter seam.
+#[async_trait]
+pub trait BleDiscovery {
+    /// Scans for BLE advertisements.
+    async fn scan(&self) -> Result<Vec<BleAdvertisement>, CoreError>;
+}
+
 /// Asynchronous BLE transport Adapter seam.
 ///
 /// Platform-specific desktop and mobile implementations must satisfy this
@@ -61,4 +133,69 @@ pub trait BleTransport {
 
     /// Enable notifications for a known BLE characteristic.
     async fn subscribe(&self, characteristic: BleCharacteristic) -> Result<(), CoreError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use async_trait::async_trait;
+
+    use super::*;
+
+    #[test]
+    fn exposes_coyote_characteristic_metadata() {
+        assert_eq!(
+            BleCharacteristic::CoyoteV3Write.service_short_uuid(),
+            0x180C
+        );
+        assert_eq!(BleCharacteristic::CoyoteV3Write.short_uuid(), 0x150A);
+        assert_eq!(
+            BleCharacteristic::CoyoteV2PwmA34.service_short_uuid(),
+            0x180B
+        );
+        assert_eq!(
+            BleCharacteristic::CoyoteBattery.service_short_uuid(),
+            0x180A
+        );
+    }
+
+    #[test]
+    fn constructs_ble_advertisement() {
+        let advertisement = BleAdvertisement::new(
+            DeviceId::new("device-1"),
+            Some("Coyote".to_owned()),
+            Some(-42),
+            vec![COYOTE_V3_SERVICE_UUID],
+        );
+
+        assert_eq!(advertisement.device_id, DeviceId::new("device-1"));
+        assert_eq!(advertisement.local_name, Some("Coyote".to_owned()));
+        assert_eq!(advertisement.rssi, Some(-42));
+        assert_eq!(advertisement.service_uuids, vec![COYOTE_V3_SERVICE_UUID]);
+    }
+
+    #[derive(Debug)]
+    struct FakeDiscovery;
+
+    #[async_trait]
+    impl BleDiscovery for FakeDiscovery {
+        async fn scan(&self) -> Result<Vec<BleAdvertisement>, CoreError> {
+            Ok(vec![BleAdvertisement::new(
+                DeviceId::new("device-1"),
+                Some("Coyote".to_owned()),
+                None,
+                vec![COYOTE_V3_SERVICE_UUID],
+            )])
+        }
+    }
+
+    #[tokio::test]
+    async fn discovery_trait_returns_advertisements() {
+        let advertisements = FakeDiscovery.scan().await.unwrap();
+
+        assert_eq!(advertisements.len(), 1);
+        assert_eq!(
+            advertisements[0].service_uuids,
+            vec![COYOTE_V3_SERVICE_UUID]
+        );
+    }
 }
