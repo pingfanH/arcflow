@@ -13,17 +13,21 @@ pub mod coyote;
 pub mod device;
 pub mod error;
 pub mod external;
+pub mod runtime;
 pub mod safety;
 pub mod session;
 
 pub use ble::{BleCharacteristic, BleNotification, BleTransport, BleWrite};
 pub use command::CoreCommand;
 pub use coyote::CoyoteV3CommandBuilder;
-pub use device::{DeviceId, DeviceModel, DeviceStatus};
+pub use device::{
+    BleAdapterStatus, DeviceId, DeviceModel, DeviceScanResult, DeviceStatus, StopOutputResult,
+};
 pub use error::CoreError;
 pub use external::{
     authorized_core_command_from_external_request, core_command_from_external_request,
     required_capability_for_external_request,
 };
+pub use runtime::ArcFlowCore;
 pub use safety::SafetyLimits;
 pub use session::DeviceSession;

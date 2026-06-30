@@ -1,6 +1,9 @@
 use std::sync::{Arc, Mutex};
 
-use arcflow_core::{authorized_core_command_from_external_request, CoreCommand, SafetyLimits};
+use arcflow_core::{
+    authorized_core_command_from_external_request, ArcFlowCore, CoreCommand, DeviceModel,
+    DeviceScanResult, DeviceStatus, SafetyLimits, StopOutputResult,
+};
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
     WsGatewayService, WsRequestHandler, DEFAULT_LOCAL_BIND,
@@ -11,6 +14,11 @@ use serde_json::{json, Value};
 #[derive(Default)]
 struct ExternalControlState {
     handle: Mutex<Option<WsGatewayHandle>>,
+}
+
+#[derive(Default)]
+struct CoreState {
+    core: ArcFlowCore,
 }
 
 #[derive(Serialize)]
@@ -32,6 +40,28 @@ struct ExternalControlStatus {
     active_sessions: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceScanResponse {
+    adapter_status: String,
+    devices: Vec<DeviceResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceResponse {
+    id: String,
+    model: String,
+    battery_percent: Option<u8>,
+    connected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StopOutputResponse {
+    stopped_devices: Vec<String>,
+}
+
 #[tauri::command]
 fn app_status() -> AppStatus {
     let limits = SafetyLimits::conservative();
@@ -43,6 +73,16 @@ fn app_status() -> AppStatus {
         max_channel_strength: limits.max_channel_strength,
         max_wave_strength: limits.max_wave_strength,
     }
+}
+
+#[tauri::command]
+fn scan_devices(state: tauri::State<'_, CoreState>) -> DeviceScanResponse {
+    device_scan_response(state.core.scan_devices())
+}
+
+#[tauri::command]
+fn stop_output(state: tauri::State<'_, CoreState>) -> StopOutputResponse {
+    stop_output_response(state.core.stop_all_output())
 }
 
 #[tauri::command]
@@ -177,13 +217,50 @@ fn external_command_ack(command: CoreCommand) -> Value {
     }
 }
 
+fn device_scan_response(result: DeviceScanResult) -> DeviceScanResponse {
+    DeviceScanResponse {
+        adapter_status: result.adapter_status.as_str().to_owned(),
+        devices: result.devices.into_iter().map(device_response).collect(),
+    }
+}
+
+fn device_response(device: DeviceStatus) -> DeviceResponse {
+    DeviceResponse {
+        id: device.id.as_str().to_owned(),
+        model: device_model_name(&device.model),
+        battery_percent: device.battery_percent,
+        connected: device.connected,
+    }
+}
+
+fn device_model_name(model: &DeviceModel) -> String {
+    match model {
+        DeviceModel::CoyoteV2 => "coyoteV2".to_owned(),
+        DeviceModel::CoyoteV3 => "coyoteV3".to_owned(),
+        DeviceModel::Unknown(value) => value.clone(),
+    }
+}
+
+fn stop_output_response(result: StopOutputResult) -> StopOutputResponse {
+    StopOutputResponse {
+        stopped_devices: result
+            .stopped_devices
+            .into_iter()
+            .map(|device_id| device_id.as_str().to_owned())
+            .collect(),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(CoreState::default())
         .manage(ExternalControlState::default())
         .invoke_handler(tauri::generate_handler![
             app_status,
+            scan_devices,
+            stop_output,
             external_control_status,
             start_external_control,
             stop_external_control

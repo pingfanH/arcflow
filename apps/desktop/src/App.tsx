@@ -33,6 +33,22 @@ type ExternalControlStatus = {
   activeSessions: number;
 };
 
+type DeviceSummary = {
+  id: string;
+  model: string;
+  batteryPercent: number | null;
+  connected: boolean;
+};
+
+type DeviceScanResponse = {
+  adapterStatus: string;
+  devices: DeviceSummary[];
+};
+
+type StopOutputResponse = {
+  stoppedDevices: string[];
+};
+
 const navItems = [
   { id: "device", label: "Device", icon: Bluetooth },
   { id: "wave", label: "Wave", icon: Activity },
@@ -49,12 +65,20 @@ const stoppedExternalControl: ExternalControlStatus = {
   activeSessions: 0,
 };
 
+const emptyDeviceScan: DeviceScanResponse = {
+  adapterStatus: "unsupported",
+  devices: [],
+};
+
 function App() {
   const [activeTab, setActiveTab] = useState<(typeof navItems)[number]["id"]>("device");
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [externalStatus, setExternalStatus] =
     useState<ExternalControlStatus>(stoppedExternalControl);
   const [externalBusy, setExternalBusy] = useState(false);
+  const [lastScan, setLastScan] = useState<DeviceScanResponse | null>(null);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [stopBusy, setStopBusy] = useState(false);
   const [deviceOnline, setDeviceOnline] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [channelA, setChannelA] = useState(12);
@@ -97,10 +121,46 @@ function App() {
       .finally(() => setExternalBusy(false));
   };
 
+  const scanDevices = () => {
+    setScanBusy(true);
+    invoke<DeviceScanResponse>("scan_devices")
+      .then((result) => {
+        setLastScan(result);
+        setDeviceOnline(result.devices.some((device) => device.connected));
+      })
+      .catch(() => {
+        setLastScan(emptyDeviceScan);
+        setDeviceOnline(false);
+      })
+      .finally(() => setScanBusy(false));
+  };
+
+  const stopOutput = () => {
+    setStopBusy(true);
+    invoke<StopOutputResponse>("stop_output")
+      .then(() => setPlaying(false))
+      .catch(() => setPlaying(false))
+      .finally(() => setStopBusy(false));
+  };
+
   const activeLabel = useMemo(
     () => navItems.find((item) => item.id === activeTab)?.label ?? "Device",
     [activeTab],
   );
+  const connectedDeviceCount = lastScan?.devices.filter((device) => device.connected).length ?? 0;
+  const deviceSubtitle = useMemo(() => {
+    if (connectedDeviceCount > 0) {
+      return connectedDeviceCount === 1
+        ? "1 Coyote device connected"
+        : `${connectedDeviceCount} Coyote devices connected`;
+    }
+
+    if (lastScan?.adapterStatus === "unsupported") {
+      return "BLE adapter not attached";
+    }
+
+    return "No device connected";
+  }, [connectedDeviceCount, lastScan]);
 
   return (
     <main className="min-h-screen bg-stone-50 text-zinc-950">
@@ -141,18 +201,20 @@ function App() {
             <div className="flex items-center gap-2">
               <button
                 className="inline-flex h-10 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
+                disabled={scanBusy}
                 title="Refresh device state"
                 type="button"
-                onClick={() => setDeviceOnline((value) => !value)}
+                onClick={scanDevices}
               >
                 <RefreshCw size={16} />
                 Scan
               </button>
               <button
-                className="inline-flex h-10 items-center gap-2 rounded-lg bg-red-600 px-3 text-sm font-semibold text-white hover:bg-red-700"
+                className="inline-flex h-10 items-center gap-2 rounded-lg bg-red-600 px-3 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={stopBusy}
                 title="Stop all output"
                 type="button"
-                onClick={() => setPlaying(false)}
+                onClick={stopOutput}
               >
                 <Square size={15} />
                 Stop
@@ -165,9 +227,7 @@ function App() {
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
                   <h2 className="text-base font-semibold">Coyote Session</h2>
-                  <p className="text-sm text-zinc-500">
-                    {deviceOnline ? "Coyote V3 connected" : "No device connected"}
-                  </p>
+                  <p className="text-sm text-zinc-500">{deviceSubtitle}</p>
                 </div>
                 <span
                   className={`inline-flex items-center gap-2 rounded-lg px-2.5 py-1 text-xs font-medium ${
