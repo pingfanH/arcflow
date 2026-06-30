@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use arcflow_plugin_runtime::{Capability, PluginAction, PluginManifest};
+use arcflow_plugin_runtime::{Capability, PluginAction, PluginManifest, PluginOutput};
 use arcflow_storage::{Storage, StorageError};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -32,6 +32,19 @@ impl<'a> PluginApi<'a> {
             "storage.private.keys" => self.storage_keys(manifest),
             method => Err(PluginApiError::UnknownMethod(method.to_owned())),
         }
+    }
+
+    /// Handles every action returned by a plugin invocation in order.
+    pub fn handle_output(
+        &self,
+        manifest: &PluginManifest,
+        output: PluginOutput,
+    ) -> Result<Vec<Value>, PluginApiError> {
+        output
+            .actions
+            .into_iter()
+            .map(|action| self.handle_action(manifest, action))
+            .collect()
     }
 
     fn storage_put(
@@ -275,6 +288,34 @@ mod tests {
             .unwrap();
 
         assert_eq!(keys, json!({ "keys": ["b"] }));
+    }
+
+    #[test]
+    fn handles_plugin_output_actions_in_order() {
+        let storage = Storage::in_memory().unwrap();
+        let api = PluginApi::new(&storage);
+        let manifest = manifest_with(vec![Capability::StoragePrivate]);
+
+        let results = api
+            .handle_output(
+                &manifest,
+                PluginOutput::new(vec![
+                    PluginAction::new(
+                        "storage.private.put",
+                        json!({ "key": "theme", "value": "dark" }),
+                    ),
+                    PluginAction::new("storage.private.get", json!({ "key": "theme" })),
+                ]),
+            )
+            .unwrap();
+
+        assert_eq!(
+            results,
+            vec![
+                json!({ "key": "theme", "stored": true }),
+                json!({ "key": "theme", "value": "dark" }),
+            ]
+        );
     }
 
     #[test]
