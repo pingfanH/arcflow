@@ -1,7 +1,7 @@
 //! Coyote device command builders.
 
-use arcflow_protocol::coyote::v3::StrengthModes;
-use arcflow_wave::CoyoteV3Window;
+use arcflow_protocol::coyote::v3::{StrengthMode, StrengthModes};
+use arcflow_wave::{ChannelOutput, CoyoteV3Window};
 
 use crate::{BleCharacteristic, BleWrite, CoreError, SafetyLimits};
 
@@ -42,6 +42,17 @@ impl CoyoteV3CommandBuilder {
             BleCharacteristic::CoyoteV3Write,
             command.to_bytes(),
         ))
+    }
+
+    /// Builds a BLE write that stops Coyote V3 output on both channels.
+    pub fn build_stop_write(self, sequence: u8) -> Result<BleWrite, CoreError> {
+        self.build_wave_write(
+            CoyoteV3Window::new(ChannelOutput::Disabled, ChannelOutput::Disabled),
+            sequence,
+            StrengthModes::new(StrengthMode::Absolute, StrengthMode::Absolute),
+            0,
+            0,
+        )
     }
 
     fn ensure_channel_strength(self, field: &'static str, value: u8) -> Result<(), CoreError> {
@@ -99,6 +110,22 @@ mod tests {
             write.payload,
             vec![
                 0xB0, 0x00, 0x00, 0x00, 0x0A, 0x0A, 0x0A, 0x0A, 0x00, 0x0A, 0x14, 0x1E, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x65,
+            ]
+        );
+    }
+
+    #[test]
+    fn builds_coyote_v3_stop_write() {
+        let write = CoyoteV3CommandBuilder::new(SafetyLimits::conservative())
+            .build_stop_write(2)
+            .unwrap();
+
+        assert_eq!(write.characteristic, BleCharacteristic::CoyoteV3Write);
+        assert_eq!(
+            write.payload,
+            vec![
+                0xB0, 0x2F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x65, 0x00, 0x00,
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x65,
             ]
         );

@@ -62,6 +62,13 @@ where
 
         self.transport.write(write).await
     }
+
+    /// Stops Coyote V3 output on both channels.
+    pub async fn stop_coyote_v3_output(&self, sequence: u8) -> Result<(), CoreError> {
+        let write = CoyoteV3CommandBuilder::new(self.safety_limits).build_stop_write(sequence)?;
+
+        self.transport.write(write).await
+    }
 }
 
 #[cfg(test)]
@@ -140,5 +147,23 @@ mod tests {
 
         let subscriptions = session.transport.subscriptions.lock().unwrap();
         assert_eq!(*subscriptions, vec![BleCharacteristic::CoyoteV3Notify]);
+    }
+
+    #[tokio::test]
+    async fn stops_coyote_v3_output_through_transport() {
+        let session = DeviceSession::new(
+            DeviceId::new("coyote-v3"),
+            FakeTransport::default(),
+            SafetyLimits::conservative(),
+        );
+
+        session.stop_coyote_v3_output(2).await.unwrap();
+
+        let writes = session.transport.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].characteristic, BleCharacteristic::CoyoteV3Write);
+        assert_eq!(writes[0].payload[1], 0x2F);
+        assert_eq!(writes[0].payload[11], 0x65);
+        assert_eq!(writes[0].payload[19], 0x65);
     }
 }
