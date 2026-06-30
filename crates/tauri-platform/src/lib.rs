@@ -4,8 +4,12 @@
 //! Tauri 2 platform adapters shared by ArcFlow desktop and mobile shells.
 
 mod ble;
+mod transport;
 
 pub use ble::{
     StaticTauriBleDiscoveryProvider, TauriBleDiscoveryController, TauriBleDiscoveryProvider,
     TauriBleDiscoveryState,
+};
+pub use transport::{
+    TauriBleTransport, TauriBleTransportProvider, UnsupportedTauriBleTransportProvider,
 };
