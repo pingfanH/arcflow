@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use arcflow_core::{
     ArcFlowCore, DeviceModel, DeviceScanResult, DeviceStatus, SafetyLimits, StopOutputResult,
@@ -7,7 +10,9 @@ use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
     WsGatewayService, WsRequestHandler, DEFAULT_LOCAL_BIND,
 };
+use arcflow_storage::Storage;
 use serde::Serialize;
+use tauri::Manager;
 
 #[derive(Default)]
 struct ExternalControlState {
@@ -17,6 +22,11 @@ struct ExternalControlState {
 #[derive(Default)]
 struct CoreState {
     core: ArcFlowCore,
+}
+
+struct StorageState {
+    storage: Mutex<Storage>,
+    database_path: PathBuf,
 }
 
 #[derive(Serialize)]
@@ -60,6 +70,13 @@ struct StopOutputResponse {
     stopped_devices: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageStatus {
+    schema_version: i64,
+    database_path: String,
+}
+
 #[tauri::command]
 fn app_status() -> AppStatus {
     let limits = SafetyLimits::conservative();
@@ -71,6 +88,19 @@ fn app_status() -> AppStatus {
         max_channel_strength: limits.max_channel_strength,
         max_wave_strength: limits.max_wave_strength,
     }
+}
+
+#[tauri::command]
+fn storage_status(state: tauri::State<'_, StorageState>) -> Result<StorageStatus, String> {
+    let storage = state.storage.lock().expect("storage state mutex poisoned");
+    let schema_version = storage
+        .schema_version()
+        .map_err(|error| error.to_string())?;
+
+    Ok(StorageStatus {
+        schema_version,
+        database_path: state.database_path.display().to_string(),
+    })
 }
 
 #[tauri::command]
@@ -242,10 +272,24 @@ fn stop_output_response(result: StopOutputResult) -> StopOutputResponse {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let app_data_dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&app_data_dir)?;
+            let database_path = app_data_dir.join("arcflow.sqlite3");
+            let storage = Storage::open(&database_path)?;
+
+            app.manage(StorageState {
+                storage: Mutex::new(storage),
+                database_path,
+            });
+
+            Ok(())
+        })
         .manage(CoreState::default())
         .manage(ExternalControlState::default())
         .invoke_handler(tauri::generate_handler![
             app_status,
+            storage_status,
             scan_devices,
             stop_output,
             external_control_status,
