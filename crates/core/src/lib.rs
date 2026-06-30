@@ -31,6 +31,7 @@ pub use device::{
 pub use error::CoreError;
 pub use external::{
     authorized_core_command_from_external_request, core_command_from_external_request,
+    execute_plugin_registry_external_request, is_plugin_registry_external_request,
     required_capability_for_external_request,
 };
 pub use plugin_api::{PluginApi, PluginApiError};

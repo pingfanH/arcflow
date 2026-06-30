@@ -23,6 +23,9 @@ pub enum Capability {
     /// Register host-rendered UI panels.
     #[serde(rename = "ui.panel")]
     UiPanel,
+    /// Install, list, enable, or disable plugins.
+    #[serde(rename = "plugin.manage")]
+    PluginManage,
     /// Subscribe to host events.
     #[serde(rename = "events.subscribe")]
     EventsSubscribe,
@@ -42,6 +45,7 @@ impl Capability {
             Self::ScriptRun => "script.run",
             Self::StoragePrivate => "storage.private",
             Self::UiPanel => "ui.panel",
+            Self::PluginManage => "plugin.manage",
             Self::EventsSubscribe => "events.subscribe",
             Self::ExternalWebSocket => "external.ws",
         }
@@ -61,9 +65,9 @@ mod tests {
 
     #[test]
     fn deserializes_capability_wire_names() {
-        let capability: Capability = serde_json::from_str("\"external.ws\"").unwrap();
+        let capability: Capability = serde_json::from_str("\"plugin.manage\"").unwrap();
 
-        assert_eq!(capability, Capability::ExternalWebSocket);
-        assert_eq!(capability.as_str(), "external.ws");
+        assert_eq!(capability, Capability::PluginManage);
+        assert_eq!(capability.as_str(), "plugin.manage");
     }
 }

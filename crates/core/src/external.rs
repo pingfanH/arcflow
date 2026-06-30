@@ -2,9 +2,15 @@
 
 use arcflow_external_control::{ClientSession, JsonRpcRequest};
 use arcflow_plugin_runtime::Capability;
+use arcflow_storage::Storage;
 use serde::Deserialize;
+use serde_json::{json, Value};
 
-use crate::{CoreCommand, CoreError, DeviceId};
+use crate::{CoreCommand, CoreError, DeviceId, PluginRegistryPersistence};
+
+const PLUGIN_REGISTRY_METHOD: &str = "plugin.registry";
+const PLUGIN_INSTALL_MANIFEST_METHOD: &str = "plugin.installManifest";
+const PLUGIN_SET_ENABLED_METHOD: &str = "plugin.setEnabled";
 
 /// Converts an authorized external-control JSON-RPC request into a core command.
 pub fn authorized_core_command_from_external_request(
@@ -68,6 +74,60 @@ pub fn core_command_from_external_request(
     }
 }
 
+/// Returns whether a request is handled by the storage-backed plugin registry surface.
+#[must_use]
+pub fn is_plugin_registry_external_request(request: &JsonRpcRequest) -> bool {
+    matches!(
+        request.method.as_str(),
+        PLUGIN_REGISTRY_METHOD | PLUGIN_INSTALL_MANIFEST_METHOD | PLUGIN_SET_ENABLED_METHOD
+    )
+}
+
+/// Executes one authorized storage-backed plugin registry external-control request.
+pub fn execute_plugin_registry_external_request(
+    session: &ClientSession,
+    request: &JsonRpcRequest,
+    storage: &Storage,
+) -> Result<Value, CoreError> {
+    authorize_plugin_registry_external_request(session, request)?;
+    let persistence = PluginRegistryPersistence::new(storage);
+    let entries = match request.method.as_str() {
+        PLUGIN_REGISTRY_METHOD => persistence.list_entries(),
+        PLUGIN_INSTALL_MANIFEST_METHOD => {
+            let params: PluginInstallManifestParams = read_params(request)?;
+            persistence.install_manifest_json(&params.manifest_json)
+        }
+        PLUGIN_SET_ENABLED_METHOD => {
+            let params: PluginSetEnabledParams = read_params(request)?;
+            persistence.set_enabled(&params.plugin_id, params.enabled)
+        }
+        method => {
+            return Err(CoreError::InvalidExternalRequest(format!(
+                "unsupported plugin registry method `{method}`"
+            )));
+        }
+    }
+    .map_err(|error| CoreError::InvalidExternalRequest(error.to_string()))?;
+
+    Ok(json!({ "plugins": entries }))
+}
+
+fn authorize_plugin_registry_external_request(
+    session: &ClientSession,
+    request: &JsonRpcRequest,
+) -> Result<(), CoreError> {
+    if !session.has_capability(Capability::PluginManage) {
+        return Err(CoreError::InvalidExternalRequest(format!(
+            "session `{}` is missing required capability `{}` for `{}`",
+            session.client_name(),
+            Capability::PluginManage.as_str(),
+            request.method
+        )));
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceParams {
@@ -78,6 +138,19 @@ struct DeviceParams {
 #[serde(rename_all = "camelCase")]
 struct ScriptRunParams {
     script_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginInstallManifestParams {
+    manifest_json: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginSetEnabledParams {
+    plugin_id: String,
+    enabled: bool,
 }
 
 fn read_params<T>(request: &JsonRpcRequest) -> Result<T, CoreError>
@@ -100,6 +173,7 @@ where
 mod tests {
     use super::*;
     use arcflow_external_control::{ClientHello, GatewayPolicy, RequestId, PROTOCOL_VERSION};
+    use arcflow_storage::Storage;
     use serde_json::json;
 
     #[test]
@@ -188,6 +262,86 @@ mod tests {
         );
 
         let error = authorized_core_command_from_external_request(&session, &request).unwrap_err();
+
+        assert!(matches!(error, CoreError::InvalidExternalRequest(_)));
+    }
+
+    #[test]
+    fn detects_plugin_registry_external_requests() {
+        let request = JsonRpcRequest::new(RequestId::Number(6), PLUGIN_REGISTRY_METHOD, None);
+
+        assert!(is_plugin_registry_external_request(&request));
+    }
+
+    #[test]
+    fn executes_plugin_registry_request_with_granted_capability() {
+        let storage = Storage::in_memory().unwrap();
+        let session = GatewayPolicy::new(vec![Capability::PluginManage])
+            .accept(ClientHello {
+                client_name: "Plugin Manager".to_owned(),
+                protocol_version: PROTOCOL_VERSION,
+                requested_capabilities: vec![Capability::PluginManage],
+            })
+            .unwrap();
+        let request = JsonRpcRequest::new(RequestId::Number(7), PLUGIN_REGISTRY_METHOD, None);
+
+        let result =
+            execute_plugin_registry_external_request(&session, &request, &storage).unwrap();
+
+        assert_eq!(result, json!({ "plugins": [] }));
+    }
+
+    #[test]
+    fn installs_plugin_manifest_through_external_request() {
+        let storage = Storage::in_memory().unwrap();
+        let session = GatewayPolicy::new(vec![Capability::PluginManage])
+            .accept(ClientHello {
+                client_name: "Plugin Manager".to_owned(),
+                protocol_version: PROTOCOL_VERSION,
+                requested_capabilities: vec![Capability::PluginManage],
+            })
+            .unwrap();
+        let request = JsonRpcRequest::new(
+            RequestId::Number(8),
+            PLUGIN_INSTALL_MANIFEST_METHOD,
+            Some(json!({
+                "manifestJson": r#"{
+                    "id":"plugin.external",
+                    "name":"External Plugin",
+                    "version":"1.0.0",
+                    "runtime":"wasm",
+                    "entry":"dist/plugin.wasm",
+                    "apiVersion":"1",
+                    "capabilities":["device.read"]
+                }"#
+            })),
+        );
+
+        let result =
+            execute_plugin_registry_external_request(&session, &request, &storage).unwrap();
+
+        assert_eq!(result["plugins"][0]["id"], "plugin.external");
+        assert!(storage
+            .plugin_registry()
+            .get("plugin.external")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn rejects_plugin_registry_request_without_manage_capability() {
+        let storage = Storage::in_memory().unwrap();
+        let session = GatewayPolicy::local_default()
+            .accept(ClientHello {
+                client_name: "Read Only".to_owned(),
+                protocol_version: PROTOCOL_VERSION,
+                requested_capabilities: vec![Capability::DeviceRead],
+            })
+            .unwrap();
+        let request = JsonRpcRequest::new(RequestId::Number(9), PLUGIN_REGISTRY_METHOD, None);
+
+        let error =
+            execute_plugin_registry_external_request(&session, &request, &storage).unwrap_err();
 
         assert!(matches!(error, CoreError::InvalidExternalRequest(_)));
     }

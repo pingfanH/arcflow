@@ -4,8 +4,9 @@ use std::{
 };
 
 use arcflow_core::{
-    ArcFlowCore, DeviceModel, DeviceScanResult, DeviceStatus, PluginRegistryEntry,
-    PluginRegistryPersistence, SafetyLimits, StopOutputResult,
+    execute_plugin_registry_external_request, is_plugin_registry_external_request, ArcFlowCore,
+    DeviceModel, DeviceScanResult, DeviceStatus, PluginRegistryEntry, PluginRegistryPersistence,
+    SafetyLimits, StopOutputResult,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
@@ -26,7 +27,7 @@ struct CoreState {
 }
 
 struct StorageState {
-    storage: Mutex<Storage>,
+    storage: Arc<Mutex<Storage>>,
     database_path: PathBuf,
 }
 
@@ -188,6 +189,7 @@ fn external_control_status(state: tauri::State<'_, ExternalControlState>) -> Ext
 async fn start_external_control(
     state: tauri::State<'_, ExternalControlState>,
     core_state: tauri::State<'_, CoreState>,
+    storage_state: tauri::State<'_, StorageState>,
 ) -> Result<ExternalControlStatus, String> {
     {
         let guard = state
@@ -202,7 +204,10 @@ async fn start_external_control(
 
     let service = WsGatewayService::new(DEFAULT_LOCAL_BIND, GatewayPolicy::local_default());
     let handle = service
-        .start(external_request_handler(core_state.core.clone()))
+        .start(external_request_handler(
+            core_state.core.clone(),
+            Arc::clone(&storage_state.storage),
+        ))
         .await
         .map_err(|error| error.to_string())?;
     let status = external_control_status_from_handle(&handle);
@@ -268,12 +273,27 @@ fn external_control_status_from_handle(handle: &WsGatewayHandle) -> ExternalCont
     }
 }
 
-fn external_request_handler(core: ArcFlowCore) -> WsRequestHandler {
+fn external_request_handler(core: ArcFlowCore, storage: Arc<Mutex<Storage>>) -> WsRequestHandler {
     Arc::new(move |session: ClientSession, request: JsonRpcRequest| {
         let core = core.clone();
+        let storage = Arc::clone(&storage);
 
         Box::pin(async move {
             let id = request.id.clone();
+
+            if is_plugin_registry_external_request(&request) {
+                let result = {
+                    let storage = storage.lock().expect("storage state mutex poisoned");
+                    execute_plugin_registry_external_request(&session, &request, &storage)
+                };
+
+                return match result {
+                    Ok(result) => JsonRpcResponse::ok(id, result),
+                    Err(error) => {
+                        JsonRpcResponse::error(id, RpcError::new(-32000, error.to_string()))
+                    }
+                };
+            }
 
             match core.execute_external_request(&session, &request).await {
                 Ok(result) => JsonRpcResponse::ok(id, result),
@@ -328,7 +348,7 @@ pub fn run() {
             let storage = Storage::open(&database_path)?;
 
             app.manage(StorageState {
-                storage: Mutex::new(storage),
+                storage: Arc::new(Mutex::new(storage)),
                 database_path,
             });
 
