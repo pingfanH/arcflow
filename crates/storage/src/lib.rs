@@ -7,6 +7,7 @@
 //! directly. They request storage actions through Rust Core.
 
 pub mod plugin_kv;
+pub mod plugin_registry;
 
 use std::{
     path::Path,
@@ -16,9 +17,10 @@ use std::{
 use rusqlite::Connection;
 
 pub use plugin_kv::PluginKvStore;
+pub use plugin_registry::{PluginRegistryStore, StoredPluginRecord};
 
 /// Current storage schema version.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 /// SQLite storage handle.
 pub struct Storage {
@@ -46,6 +48,12 @@ impl Storage {
     #[must_use]
     pub fn plugin_kv(&self) -> PluginKvStore<'_> {
         PluginKvStore::new(&self.connection)
+    }
+
+    /// Returns a persistent installed plugin registry Interface.
+    #[must_use]
+    pub fn plugin_registry(&self) -> PluginRegistryStore<'_> {
+        PluginRegistryStore::new(&self.connection)
     }
 
     /// Returns the current applied schema version.
@@ -89,7 +97,30 @@ impl Storage {
             self.connection
                 .execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
-                    rusqlite::params![SCHEMA_VERSION, unix_time_seconds()],
+                    rusqlite::params![1, unix_time_seconds()],
+                )
+                .map_err(StorageError::Sql)?;
+        }
+
+        if self.schema_version()? < 2 {
+            self.connection
+                .execute_batch(
+                    "
+                    CREATE TABLE plugin_registry (
+                        plugin_id TEXT PRIMARY KEY,
+                        manifest_json TEXT NOT NULL,
+                        enabled INTEGER NOT NULL DEFAULT 0,
+                        installed_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL
+                    );
+                    ",
+                )
+                .map_err(StorageError::Sql)?;
+
+            self.connection
+                .execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                    rusqlite::params![2, unix_time_seconds()],
                 )
                 .map_err(StorageError::Sql)?;
         }
