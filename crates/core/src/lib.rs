@@ -12,6 +12,7 @@ pub mod command;
 pub mod coyote;
 pub mod device;
 pub mod error;
+pub mod external;
 pub mod safety;
 
 pub use ble::{BleCharacteristic, BleNotification, BleTransport, BleWrite};
@@ -19,4 +20,5 @@ pub use command::CoreCommand;
 pub use coyote::CoyoteV3CommandBuilder;
 pub use device::{DeviceId, DeviceModel, DeviceStatus};
 pub use error::CoreError;
+pub use external::core_command_from_external_request;
 pub use safety::SafetyLimits;

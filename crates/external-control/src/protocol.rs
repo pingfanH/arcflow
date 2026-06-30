@@ -4,6 +4,9 @@ use arcflow_plugin_runtime::Capability;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// Current external-control protocol version.
+pub const PROTOCOL_VERSION: u16 = 1;
+
 /// Initial hello message sent by an external-control client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

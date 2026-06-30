@@ -8,8 +8,11 @@
 
 pub mod protocol;
 pub mod security;
+pub mod session;
 
 pub use protocol::{
     ClientHello, JsonRpcRequest, JsonRpcResponse, RequestId, RpcError, ServerEvent,
+    PROTOCOL_VERSION,
 };
 pub use security::{ExposureMode, DEFAULT_LOCAL_BIND};
+pub use session::{ClientSession, GatewayPolicy, SessionError};

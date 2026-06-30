@@ -23,6 +23,8 @@ pub enum CoreError {
     Protocol(ProtocolError),
     /// BLE transport failed.
     Transport(String),
+    /// External-control request could not be routed.
+    InvalidExternalRequest(String),
 }
 
 impl fmt::Display for CoreError {
@@ -36,6 +38,9 @@ impl fmt::Display for CoreError {
             Self::Wave(error) => write!(f, "wave error: {error}"),
             Self::Protocol(error) => write!(f, "protocol error: {error}"),
             Self::Transport(error) => write!(f, "transport error: {error}"),
+            Self::InvalidExternalRequest(error) => {
+                write!(f, "invalid external-control request: {error}")
+            }
         }
     }
 }

@@ -56,6 +56,8 @@ dependencies = [
  "arcflow-protocol",
  "arcflow-wave",
  "async-trait",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
