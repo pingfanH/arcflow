@@ -8,6 +8,8 @@
 
 pub mod capability;
 pub mod manifest;
+pub mod registry;
 
 pub use capability::Capability;
 pub use manifest::{ManifestError, PluginManifest, RuntimeKind};
+pub use registry::{PluginRecord, PluginRegistry, PluginRegistryError};
