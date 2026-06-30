@@ -5,8 +5,8 @@ use std::{
 
 use arcflow_core::{
     execute_plugin_registry_external_request, is_plugin_registry_external_request, ArcFlowCore,
-    DeviceModel, DeviceScanResult, DeviceStatus, PluginRegistryEntry, PluginRegistryPersistence,
-    SafetyLimits, StopOutputResult,
+    DeviceModel, DeviceScanResult, DeviceStatus, PluginBundle, PluginRegistryEntry,
+    PluginRegistryPersistence, SafetyLimits, StopOutputResult,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
@@ -129,6 +129,23 @@ fn install_plugin_manifest(
     manifest_json: String,
     state: tauri::State<'_, StorageState>,
 ) -> Result<PluginRegistryResponse, String> {
+    let storage = state.storage.lock().expect("storage state mutex poisoned");
+    let persistence = PluginRegistryPersistence::new(&storage);
+    let plugins = persistence
+        .install_manifest_json(&manifest_json)
+        .map_err(|error| error.to_string())?;
+
+    Ok(PluginRegistryResponse { plugins })
+}
+
+#[tauri::command]
+fn install_plugin_bundle(
+    bundle_path: String,
+    state: tauri::State<'_, StorageState>,
+) -> Result<PluginRegistryResponse, String> {
+    let bundle = PluginBundle::load(bundle_path).map_err(|error| error.to_string())?;
+    let manifest_json =
+        serde_json::to_string(bundle.manifest()).map_err(|error| error.to_string())?;
     let storage = state.storage.lock().expect("storage state mutex poisoned");
     let persistence = PluginRegistryPersistence::new(&storage);
     let plugins = persistence
@@ -361,6 +378,7 @@ pub fn run() {
             storage_status,
             plugin_registry,
             install_plugin_manifest,
+            install_plugin_bundle,
             set_plugin_enabled,
             scan_devices,
             stop_output,

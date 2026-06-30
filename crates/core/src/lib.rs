@@ -15,6 +15,7 @@ pub mod error;
 pub mod external;
 pub mod output;
 pub mod plugin_api;
+pub mod plugin_bundle;
 pub mod plugin_registry_persistence;
 pub mod runtime;
 pub mod safety;
@@ -38,6 +39,7 @@ pub use external::{
 };
 pub use output::{CoyoteV3OutputController, DeviceBleOutputSink};
 pub use plugin_api::{PluginApi, PluginApiError};
+pub use plugin_bundle::{PluginBundle, PluginBundleError};
 pub use plugin_registry_persistence::{
     PluginRegistryEntry, PluginRegistryPersistence, PluginRegistryPersistenceError,
 };
