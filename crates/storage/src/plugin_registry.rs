@@ -13,6 +13,8 @@ pub struct StoredPluginRecord {
     pub manifest_json: String,
     /// Whether the plugin should be enabled at startup.
     pub enabled: bool,
+    /// Plugin bundle root directory if installed from disk.
+    pub bundle_root: Option<String>,
 }
 
 impl StoredPluginRecord {
@@ -27,6 +29,23 @@ impl StoredPluginRecord {
             plugin_id: plugin_id.into(),
             manifest_json: manifest_json.into(),
             enabled,
+            bundle_root: None,
+        }
+    }
+
+    /// Constructs a stored plugin record with a bundle root.
+    #[must_use]
+    pub fn with_bundle_root(
+        plugin_id: impl Into<String>,
+        manifest_json: impl Into<String>,
+        enabled: bool,
+        bundle_root: impl Into<String>,
+    ) -> Self {
+        Self {
+            plugin_id: plugin_id.into(),
+            manifest_json: manifest_json.into(),
+            enabled,
+            bundle_root: Some(bundle_root.into()),
         }
     }
 }
@@ -55,19 +74,22 @@ impl<'a> PluginRegistryStore<'a> {
                 INSERT INTO plugin_registry (
                     plugin_id,
                     manifest_json,
+                    bundle_root,
                     enabled,
                     installed_at,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?4)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
                 ON CONFLICT(plugin_id) DO UPDATE SET
                     manifest_json = excluded.manifest_json,
+                    bundle_root = excluded.bundle_root,
                     enabled = excluded.enabled,
                     updated_at = excluded.updated_at
                 ",
                 params![
                     record.plugin_id,
                     record.manifest_json,
+                    record.bundle_root,
                     enabled_flag(record.enabled),
                     now
                 ],
@@ -84,7 +106,7 @@ impl<'a> PluginRegistryStore<'a> {
         self.connection
             .query_row(
                 "
-                SELECT plugin_id, manifest_json, enabled
+                SELECT plugin_id, manifest_json, bundle_root, enabled
                 FROM plugin_registry
                 WHERE plugin_id = ?1
                 ",
@@ -101,7 +123,7 @@ impl<'a> PluginRegistryStore<'a> {
             .connection
             .prepare(
                 "
-                SELECT plugin_id, manifest_json, enabled
+                SELECT plugin_id, manifest_json, bundle_root, enabled
                 FROM plugin_registry
                 ORDER BY plugin_id ASC
                 ",
@@ -155,7 +177,8 @@ fn read_record(row: &rusqlite::Row<'_>) -> Result<StoredPluginRecord, rusqlite::
     Ok(StoredPluginRecord {
         plugin_id: row.get(0)?,
         manifest_json: row.get(1)?,
-        enabled: row.get::<_, i64>(2)? != 0,
+        bundle_root: row.get(2)?,
+        enabled: row.get::<_, i64>(3)? != 0,
     })
 }
 
@@ -215,5 +238,25 @@ mod tests {
         registry.delete("plugin.a").unwrap();
 
         assert_eq!(registry.get("plugin.a").unwrap(), None);
+    }
+
+    #[test]
+    fn stores_bundle_root() {
+        let storage = Storage::in_memory().unwrap();
+        let registry = storage.plugin_registry();
+
+        registry
+            .upsert(&StoredPluginRecord::with_bundle_root(
+                "plugin.a",
+                record("plugin.a", false).manifest_json,
+                false,
+                "/plugins/plugin.a",
+            ))
+            .unwrap();
+
+        assert_eq!(
+            registry.get("plugin.a").unwrap().unwrap().bundle_root,
+            Some("/plugins/plugin.a".to_owned())
+        );
     }
 }

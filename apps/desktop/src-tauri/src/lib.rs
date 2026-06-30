@@ -149,7 +149,10 @@ fn install_plugin_bundle(
     let storage = state.storage.lock().expect("storage state mutex poisoned");
     let persistence = PluginRegistryPersistence::new(&storage);
     let plugins = persistence
-        .install_manifest_json(&manifest_json)
+        .install_manifest_json_with_bundle_root(
+            &manifest_json,
+            Some(bundle.root().display().to_string()),
+        )
         .map_err(|error| error.to_string())?;
 
     Ok(PluginRegistryResponse { plugins })

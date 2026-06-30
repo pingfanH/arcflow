@@ -1,11 +1,9 @@
 //! Persistence bridge between plugin-runtime registry and SQLite storage.
 
 use core::fmt;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use arcflow_plugin_runtime::{
-    Capability, PluginManifest, PluginRecord, PluginRegistry, RuntimeKind,
-};
+use arcflow_plugin_runtime::{Capability, PluginManifest, PluginRegistry, RuntimeKind};
 use arcflow_storage::{Storage, StorageError, StoredPluginRecord};
 use serde::Serialize;
 
@@ -27,6 +25,8 @@ pub struct PluginRegistryEntry {
     pub capabilities: Vec<String>,
     /// Whether this plugin should be enabled at startup.
     pub enabled: bool,
+    /// Plugin bundle root directory if installed from disk.
+    pub bundle_root: Option<String>,
 }
 
 /// Core-owned plugin registry persistence bridge.
@@ -66,12 +66,12 @@ impl<'a> PluginRegistryPersistence<'a> {
 
     /// Lists the persisted plugin registry as stable IPC-friendly records.
     pub fn list_entries(&self) -> Result<Vec<PluginRegistryEntry>, PluginRegistryPersistenceError> {
-        Ok(self
-            .load()?
-            .list()
+        self.storage
+            .plugin_registry()
+            .list()?
             .into_iter()
-            .map(plugin_registry_entry)
-            .collect())
+            .map(plugin_registry_entry_from_stored)
+            .collect()
     }
 
     /// Installs a plugin manifest JSON document and persists the registry.
@@ -79,20 +79,40 @@ impl<'a> PluginRegistryPersistence<'a> {
         &self,
         manifest_json: &str,
     ) -> Result<Vec<PluginRegistryEntry>, PluginRegistryPersistenceError> {
+        self.install_manifest_json_with_bundle_root(manifest_json, None)
+    }
+
+    /// Installs a plugin manifest JSON document with an optional bundle root.
+    pub fn install_manifest_json_with_bundle_root(
+        &self,
+        manifest_json: &str,
+        bundle_root: Option<String>,
+    ) -> Result<Vec<PluginRegistryEntry>, PluginRegistryPersistenceError> {
         let manifest = PluginManifest::from_json(manifest_json)
             .map_err(|error| PluginRegistryPersistenceError::Manifest(error.to_string()))?;
+        let plugin_id = manifest.id.clone();
         let mut registry = self.load()?;
 
         registry
             .install(manifest)
             .map_err(|error| PluginRegistryPersistenceError::Registry(error.to_string()))?;
         self.save(&registry)?;
+        if let Some(bundle_root) = bundle_root {
+            let store = self.storage.plugin_registry();
+            let stored = store.get(&plugin_id)?.ok_or_else(|| {
+                PluginRegistryPersistenceError::Storage(format!(
+                    "plugin `{plugin_id}` was not persisted after install"
+                ))
+            })?;
+            store.upsert(&StoredPluginRecord::with_bundle_root(
+                stored.plugin_id,
+                stored.manifest_json,
+                stored.enabled,
+                bundle_root,
+            ))?;
+        }
 
-        Ok(registry
-            .list()
-            .into_iter()
-            .map(plugin_registry_entry)
-            .collect())
+        self.list_entries()
     }
 
     /// Updates a plugin enabled flag and persists the registry.
@@ -115,23 +135,24 @@ impl<'a> PluginRegistryPersistence<'a> {
 
         self.save(&registry)?;
 
-        Ok(registry
-            .list()
-            .into_iter()
-            .map(plugin_registry_entry)
-            .collect())
+        self.list_entries()
     }
 
     /// Saves the current plugin-runtime registry as the persisted registry.
     pub fn save(&self, registry: &PluginRegistry) -> Result<(), PluginRegistryPersistenceError> {
         let store = self.storage.plugin_registry();
+        let stored_records = store.list()?;
+        let existing_bundle_roots: BTreeMap<String, Option<String>> = stored_records
+            .iter()
+            .map(|stored| (stored.plugin_id.clone(), stored.bundle_root.clone()))
+            .collect();
         let active_ids: BTreeSet<String> = registry
             .list()
             .into_iter()
             .map(|record| record.manifest().id.clone())
             .collect();
 
-        for stored in store.list()? {
+        for stored in stored_records {
             if !active_ids.contains(&stored.plugin_id) {
                 store.delete(&stored.plugin_id)?;
             }
@@ -140,10 +161,13 @@ impl<'a> PluginRegistryPersistence<'a> {
         for record in registry.list() {
             let manifest_json = serde_json::to_string(record.manifest())
                 .map_err(|error| PluginRegistryPersistenceError::Json(error.to_string()))?;
-            store.upsert(&StoredPluginRecord::new(
-                record.manifest().id.clone(),
+            let plugin_id = record.manifest().id.clone();
+            let bundle_root = existing_bundle_roots.get(&plugin_id).cloned().flatten();
+            store.upsert(&stored_plugin_record(
+                plugin_id,
                 manifest_json,
                 record.enabled(),
+                bundle_root,
             ))?;
         }
 
@@ -151,10 +175,13 @@ impl<'a> PluginRegistryPersistence<'a> {
     }
 }
 
-fn plugin_registry_entry(record: &PluginRecord) -> PluginRegistryEntry {
-    let manifest = record.manifest();
+fn plugin_registry_entry_from_stored(
+    stored: StoredPluginRecord,
+) -> Result<PluginRegistryEntry, PluginRegistryPersistenceError> {
+    let manifest = PluginManifest::from_json(&stored.manifest_json)
+        .map_err(|error| PluginRegistryPersistenceError::Manifest(error.to_string()))?;
 
-    PluginRegistryEntry {
+    Ok(PluginRegistryEntry {
         id: manifest.id.clone(),
         name: manifest.name.clone(),
         version: manifest.version.clone(),
@@ -165,7 +192,22 @@ fn plugin_registry_entry(record: &PluginRecord) -> PluginRegistryEntry {
             .iter()
             .map(|capability| capability_name(*capability).to_owned())
             .collect(),
-        enabled: record.enabled(),
+        enabled: stored.enabled,
+        bundle_root: stored.bundle_root,
+    })
+}
+
+fn stored_plugin_record(
+    plugin_id: String,
+    manifest_json: String,
+    enabled: bool,
+    bundle_root: Option<String>,
+) -> StoredPluginRecord {
+    match bundle_root {
+        Some(bundle_root) => {
+            StoredPluginRecord::with_bundle_root(plugin_id, manifest_json, enabled, bundle_root)
+        }
+        None => StoredPluginRecord::new(plugin_id, manifest_json, enabled),
     }
 }
 
@@ -279,7 +321,62 @@ mod tests {
         assert_eq!(entries[0].runtime, "wasm");
         assert_eq!(entries[0].capabilities, vec!["device.read"]);
         assert!(!entries[0].enabled);
+        assert_eq!(entries[0].bundle_root, None);
         assert!(storage.plugin_registry().get("plugin.a").unwrap().is_some());
+    }
+
+    #[test]
+    fn installs_manifest_json_with_bundle_root() {
+        let storage = Storage::in_memory().unwrap();
+        let persistence = PluginRegistryPersistence::new(&storage);
+        let manifest_json = serde_json::to_string(&manifest("plugin.a")).unwrap();
+
+        let entries = persistence
+            .install_manifest_json_with_bundle_root(
+                &manifest_json,
+                Some("/plugins/plugin.a".to_owned()),
+            )
+            .unwrap();
+
+        assert_eq!(entries[0].bundle_root, Some("/plugins/plugin.a".to_owned()));
+        assert_eq!(
+            storage
+                .plugin_registry()
+                .get("plugin.a")
+                .unwrap()
+                .unwrap()
+                .bundle_root,
+            Some("/plugins/plugin.a".to_owned())
+        );
+    }
+
+    #[test]
+    fn save_preserves_existing_bundle_root() {
+        let storage = Storage::in_memory().unwrap();
+        let persistence = PluginRegistryPersistence::new(&storage);
+        let mut registry = PluginRegistry::new();
+        registry.install(manifest("plugin.a")).unwrap();
+        storage
+            .plugin_registry()
+            .upsert(&StoredPluginRecord::with_bundle_root(
+                "plugin.a",
+                serde_json::to_string(&manifest("plugin.a")).unwrap(),
+                false,
+                "/plugins/plugin.a",
+            ))
+            .unwrap();
+
+        persistence.save(&registry).unwrap();
+
+        assert_eq!(
+            storage
+                .plugin_registry()
+                .get("plugin.a")
+                .unwrap()
+                .unwrap()
+                .bundle_root,
+            Some("/plugins/plugin.a".to_owned())
+        );
     }
 
     #[test]

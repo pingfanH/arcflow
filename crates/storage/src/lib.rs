@@ -20,7 +20,7 @@ pub use plugin_kv::PluginKvStore;
 pub use plugin_registry::{PluginRegistryStore, StoredPluginRecord};
 
 /// Current storage schema version.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// SQLite storage handle.
 pub struct Storage {
@@ -121,6 +121,24 @@ impl Storage {
                 .execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
                     rusqlite::params![2, unix_time_seconds()],
+                )
+                .map_err(StorageError::Sql)?;
+        }
+
+        if self.schema_version()? < 3 {
+            self.connection
+                .execute_batch(
+                    "
+                    ALTER TABLE plugin_registry
+                    ADD COLUMN bundle_root TEXT;
+                    ",
+                )
+                .map_err(StorageError::Sql)?;
+
+            self.connection
+                .execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                    rusqlite::params![3, unix_time_seconds()],
                 )
                 .map_err(StorageError::Sql)?;
         }
