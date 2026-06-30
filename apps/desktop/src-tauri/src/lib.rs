@@ -4,16 +4,18 @@ use std::{
 };
 
 use arcflow_core::{
-    execute_plugin_registry_external_request, is_plugin_registry_external_request, ArcFlowCore,
+    execute_plugin_registry_external_request, execute_script_documents_external_request,
+    is_plugin_registry_external_request, is_script_documents_external_request, ArcFlowCore,
     DeviceModel, DeviceScanResult, DeviceStatus, PluginBundle, PluginRegistryEntry,
-    PluginRegistryPersistence, SafetyLimits, StopOutputResult, StorageScriptRunner,
+    PluginRegistryPersistence, SafetyLimits, ScriptDocumentEntry, ScriptDocumentPersistence,
+    StopOutputResult, StorageScriptRunner,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
     WsGatewayService, WsRequestHandler, DEFAULT_LOCAL_BIND,
 };
-use arcflow_script::{ScriptCompiler, ScriptDocument};
-use arcflow_storage::{Storage, StoredScriptRecord};
+use arcflow_script::ScriptCompiler;
+use arcflow_storage::Storage;
 use serde::Serialize;
 use tauri::Manager;
 
@@ -87,15 +89,8 @@ struct PluginRegistryResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ScriptDocumentResponse {
-    script_id: String,
-    document_json: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
 struct ScriptsResponse {
-    scripts: Vec<ScriptDocumentResponse>,
+    scripts: Vec<ScriptDocumentEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -196,7 +191,11 @@ fn set_plugin_enabled(
 #[tauri::command]
 fn list_scripts(state: tauri::State<'_, StorageState>) -> Result<ScriptsResponse, String> {
     let storage = state.storage.lock().expect("storage state mutex poisoned");
-    scripts_response(&storage)
+    let scripts = ScriptDocumentPersistence::new(&storage)
+        .list()
+        .map_err(|error| error.to_string())?;
+
+    Ok(ScriptsResponse { scripts })
 }
 
 #[tauri::command]
@@ -205,15 +204,12 @@ fn upsert_script(
     document_json: String,
     state: tauri::State<'_, StorageState>,
 ) -> Result<ScriptsResponse, String> {
-    let record = validate_script_record(&script_id, &document_json)?;
     let storage = state.storage.lock().expect("storage state mutex poisoned");
-
-    storage
-        .scripts()
-        .upsert(&record)
+    let scripts = ScriptDocumentPersistence::new(&storage)
+        .upsert(&script_id, &document_json)
         .map_err(|error| error.to_string())?;
 
-    scripts_response(&storage)
+    Ok(ScriptsResponse { scripts })
 }
 
 #[tauri::command]
@@ -222,13 +218,11 @@ fn delete_script(
     state: tauri::State<'_, StorageState>,
 ) -> Result<ScriptsResponse, String> {
     let storage = state.storage.lock().expect("storage state mutex poisoned");
-
-    storage
-        .scripts()
+    let scripts = ScriptDocumentPersistence::new(&storage)
         .delete(&script_id)
         .map_err(|error| error.to_string())?;
 
-    scripts_response(&storage)
+    Ok(ScriptsResponse { scripts })
 }
 
 #[tauri::command]
@@ -389,6 +383,20 @@ fn external_request_handler(core: ArcFlowCore, storage: Arc<Mutex<Storage>>) -> 
                 };
             }
 
+            if is_script_documents_external_request(&request) {
+                let result = {
+                    let storage = storage.lock().expect("storage state mutex poisoned");
+                    execute_script_documents_external_request(&session, &request, &storage)
+                };
+
+                return match result {
+                    Ok(result) => JsonRpcResponse::ok(id, result),
+                    Err(error) => {
+                        JsonRpcResponse::error(id, RpcError::new(-32000, error.to_string()))
+                    }
+                };
+            }
+
             match core.execute_external_request(&session, &request).await {
                 Ok(result) => JsonRpcResponse::ok(id, result),
                 Err(error) => JsonRpcResponse::error(id, RpcError::new(-32000, error.to_string())),
@@ -429,41 +437,6 @@ fn stop_output_response(result: StopOutputResult) -> StopOutputResponse {
             .map(|device_id| device_id.as_str().to_owned())
             .collect(),
     }
-}
-
-fn scripts_response(storage: &Storage) -> Result<ScriptsResponse, String> {
-    let scripts = storage
-        .scripts()
-        .list()
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .map(|record| ScriptDocumentResponse {
-            script_id: record.script_id,
-            document_json: record.document_json,
-        })
-        .collect();
-
-    Ok(ScriptsResponse { scripts })
-}
-
-fn validate_script_record(
-    script_id: &str,
-    document_json: &str,
-) -> Result<StoredScriptRecord, String> {
-    let document = ScriptDocument::from_json(document_json).map_err(|error| error.to_string())?;
-
-    if document.id != script_id {
-        return Err(format!(
-            "script id `{script_id}` does not match document id `{}`",
-            document.id
-        ));
-    }
-
-    ScriptCompiler::default()
-        .compile(document)
-        .map_err(|error| error.to_string())?;
-
-    Ok(StoredScriptRecord::new(script_id, document_json))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -511,66 +484,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn validates_script_before_storage() {
-        let record = validate_script_record(
-            "script.demo",
-            r#"{"id":"script.demo","version":1,"steps":[{"type":"wait","durationMs":1}]}"#,
-        )
-        .unwrap();
-
-        assert_eq!(record.script_id, "script.demo");
-    }
-
-    #[test]
-    fn rejects_mismatched_script_id() {
-        let error = validate_script_record(
-            "script.outer",
-            r#"{"id":"script.inner","version":1,"steps":[{"type":"wait","durationMs":1}]}"#,
-        )
-        .unwrap_err();
-
-        assert!(error.contains("does not match"));
-    }
-
-    #[test]
-    fn rejects_invalid_script_documents() {
-        let error = validate_script_record(
-            "script.empty",
-            r#"{"id":"script.empty","version":1,"steps":[]}"#,
-        )
-        .unwrap_err();
-
-        assert!(error.contains("at least one step"));
-    }
-
-    #[test]
-    fn lists_scripts_in_storage_order() {
-        let storage = Storage::in_memory().unwrap();
-        storage
-            .scripts()
-            .upsert(&StoredScriptRecord::new(
-                "script.b",
-                r#"{"id":"script.b","version":1,"steps":[{"type":"wait","durationMs":1}]}"#,
-            ))
-            .unwrap();
-        storage
-            .scripts()
-            .upsert(&StoredScriptRecord::new(
-                "script.a",
-                r#"{"id":"script.a","version":1,"steps":[{"type":"wait","durationMs":1}]}"#,
-            ))
-            .unwrap();
-
-        let response = scripts_response(&storage).unwrap();
-
-        assert_eq!(response.scripts[0].script_id, "script.a");
-        assert_eq!(response.scripts[1].script_id, "script.b");
-    }
 }

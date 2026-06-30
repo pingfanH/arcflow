@@ -8,11 +8,16 @@ use arcflow_wave::{ChannelOutput, ChannelWindow, CoyoteV3Window, WavePoint};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{CoreCommand, CoreError, DeviceId, PluginRegistryPersistence};
+use crate::{
+    CoreCommand, CoreError, DeviceId, PluginRegistryPersistence, ScriptDocumentPersistence,
+};
 
 const PLUGIN_REGISTRY_METHOD: &str = "plugin.registry";
 const PLUGIN_INSTALL_MANIFEST_METHOD: &str = "plugin.installManifest";
 const PLUGIN_SET_ENABLED_METHOD: &str = "plugin.setEnabled";
+const SCRIPT_LIST_METHOD: &str = "script.list";
+const SCRIPT_UPSERT_METHOD: &str = "script.upsert";
+const SCRIPT_DELETE_METHOD: &str = "script.delete";
 
 /// Converts an authorized external-control JSON-RPC request into a core command.
 pub fn authorized_core_command_from_external_request(
@@ -90,6 +95,15 @@ pub fn is_plugin_registry_external_request(request: &JsonRpcRequest) -> bool {
     )
 }
 
+/// Returns whether a request is handled by the storage-backed script document surface.
+#[must_use]
+pub fn is_script_documents_external_request(request: &JsonRpcRequest) -> bool {
+    matches!(
+        request.method.as_str(),
+        SCRIPT_LIST_METHOD | SCRIPT_UPSERT_METHOD | SCRIPT_DELETE_METHOD
+    )
+}
+
 /// Executes one authorized storage-backed plugin registry external-control request.
 pub fn execute_plugin_registry_external_request(
     session: &ClientSession,
@@ -119,6 +133,35 @@ pub fn execute_plugin_registry_external_request(
     Ok(json!({ "plugins": entries }))
 }
 
+/// Executes one authorized storage-backed script document external-control request.
+pub fn execute_script_documents_external_request(
+    session: &ClientSession,
+    request: &JsonRpcRequest,
+    storage: &Storage,
+) -> Result<Value, CoreError> {
+    authorize_script_documents_external_request(session, request)?;
+    let persistence = ScriptDocumentPersistence::new(storage);
+    let scripts = match request.method.as_str() {
+        SCRIPT_LIST_METHOD => persistence.list(),
+        SCRIPT_UPSERT_METHOD => {
+            let params: ScriptUpsertParams = read_params(request)?;
+            persistence.upsert(&params.script_id, &params.document_json)
+        }
+        SCRIPT_DELETE_METHOD => {
+            let params: ScriptDeleteParams = read_params(request)?;
+            persistence.delete(&params.script_id)
+        }
+        method => {
+            return Err(CoreError::InvalidExternalRequest(format!(
+                "unsupported script document method `{method}`"
+            )));
+        }
+    }
+    .map_err(|error| CoreError::InvalidExternalRequest(error.to_string()))?;
+
+    Ok(json!({ "scripts": scripts }))
+}
+
 fn authorize_plugin_registry_external_request(
     session: &ClientSession,
     request: &JsonRpcRequest,
@@ -135,6 +178,22 @@ fn authorize_plugin_registry_external_request(
     Ok(())
 }
 
+fn authorize_script_documents_external_request(
+    session: &ClientSession,
+    request: &JsonRpcRequest,
+) -> Result<(), CoreError> {
+    if !session.has_capability(Capability::ScriptManage) {
+        return Err(CoreError::InvalidExternalRequest(format!(
+            "session `{}` is missing required capability `{}` for `{}`",
+            session.client_name(),
+            Capability::ScriptManage.as_str(),
+            request.method
+        )));
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceParams {
@@ -144,6 +203,19 @@ struct DeviceParams {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ScriptRunParams {
+    script_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScriptUpsertParams {
+    script_id: String,
+    document_json: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ScriptDeleteParams {
     script_id: String,
 }
 
@@ -406,6 +478,13 @@ mod tests {
     }
 
     #[test]
+    fn detects_script_document_external_requests() {
+        let request = JsonRpcRequest::new(RequestId::Number(7), SCRIPT_LIST_METHOD, None);
+
+        assert!(is_script_documents_external_request(&request));
+    }
+
+    #[test]
     fn executes_plugin_registry_request_with_granted_capability() {
         let storage = Storage::in_memory().unwrap();
         let session = GatewayPolicy::new(vec![Capability::PluginManage])
@@ -478,6 +557,86 @@ mod tests {
         assert!(matches!(error, CoreError::InvalidExternalRequest(_)));
     }
 
+    #[test]
+    fn lists_scripts_through_external_request() {
+        let storage = Storage::in_memory().unwrap();
+        let session = script_manager_session();
+        let request = JsonRpcRequest::new(RequestId::Number(10), SCRIPT_LIST_METHOD, None);
+
+        let result =
+            execute_script_documents_external_request(&session, &request, &storage).unwrap();
+
+        assert_eq!(result, json!({ "scripts": [] }));
+    }
+
+    #[test]
+    fn upserts_script_through_external_request() {
+        let storage = Storage::in_memory().unwrap();
+        let session = script_manager_session();
+        let request = JsonRpcRequest::new(
+            RequestId::Number(11),
+            SCRIPT_UPSERT_METHOD,
+            Some(json!({
+                "scriptId": "script.external",
+                "documentJson": r#"{"id":"script.external","version":1,"steps":[{"type":"wait","durationMs":1}]}"#
+            })),
+        );
+
+        let result =
+            execute_script_documents_external_request(&session, &request, &storage).unwrap();
+
+        assert_eq!(result["scripts"][0]["scriptId"], "script.external");
+        assert!(storage.scripts().get("script.external").unwrap().is_some());
+    }
+
+    #[test]
+    fn deletes_script_through_external_request() {
+        let storage = Storage::in_memory().unwrap();
+        let session = script_manager_session();
+        execute_script_documents_external_request(
+            &session,
+            &JsonRpcRequest::new(
+                RequestId::Number(12),
+                SCRIPT_UPSERT_METHOD,
+                Some(json!({
+                    "scriptId": "script.external",
+                    "documentJson": r#"{"id":"script.external","version":1,"steps":[{"type":"wait","durationMs":1}]}"#
+                })),
+            ),
+            &storage,
+        )
+        .unwrap();
+        let request = JsonRpcRequest::new(
+            RequestId::Number(13),
+            SCRIPT_DELETE_METHOD,
+            Some(json!({ "scriptId": "script.external" })),
+        );
+
+        let result =
+            execute_script_documents_external_request(&session, &request, &storage).unwrap();
+
+        assert_eq!(result, json!({ "scripts": [] }));
+        assert_eq!(storage.scripts().get("script.external").unwrap(), None);
+    }
+
+    #[test]
+    fn rejects_script_document_request_without_manage_capability() {
+        let storage = Storage::in_memory().unwrap();
+        let session = GatewayPolicy::local_default()
+            .accept(ClientHello {
+                client_name: "Read Only".to_owned(),
+                protocol_version: PROTOCOL_VERSION,
+                requested_capabilities: vec![Capability::DeviceRead],
+            })
+            .unwrap();
+        let request = JsonRpcRequest::new(RequestId::Number(14), SCRIPT_LIST_METHOD, None);
+
+        let error =
+            execute_script_documents_external_request(&session, &request, &storage).unwrap_err();
+
+        assert!(matches!(error, CoreError::InvalidExternalRequest(_)));
+    }
+
     fn safe_window() -> CoyoteV3Window {
         let channel = ChannelWindow::new([
             WavePoint::new(10, 0).unwrap(),
@@ -487,5 +646,15 @@ mod tests {
         ]);
 
         CoyoteV3Window::new(ChannelOutput::Window(channel), ChannelOutput::Disabled)
+    }
+
+    fn script_manager_session() -> ClientSession {
+        GatewayPolicy::new(vec![Capability::ScriptManage])
+            .accept(ClientHello {
+                client_name: "Script Manager".to_owned(),
+                protocol_version: PROTOCOL_VERSION,
+                requested_capabilities: vec![Capability::ScriptManage],
+            })
+            .unwrap()
     }
 }

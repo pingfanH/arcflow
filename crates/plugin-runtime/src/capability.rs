@@ -17,6 +17,9 @@ pub enum Capability {
     /// Run scripts through the Rust script engine.
     #[serde(rename = "script.run")]
     ScriptRun,
+    /// Install, update, list, or delete script documents.
+    #[serde(rename = "script.manage")]
+    ScriptManage,
     /// Use plugin-private storage.
     #[serde(rename = "storage.private")]
     StoragePrivate,
@@ -43,6 +46,7 @@ impl Capability {
             Self::WaveGenerate => "wave.generate",
             Self::WaveControl => "wave.control",
             Self::ScriptRun => "script.run",
+            Self::ScriptManage => "script.manage",
             Self::StoragePrivate => "storage.private",
             Self::UiPanel => "ui.panel",
             Self::PluginManage => "plugin.manage",
@@ -69,5 +73,13 @@ mod tests {
 
         assert_eq!(capability, Capability::PluginManage);
         assert_eq!(capability.as_str(), "plugin.manage");
+    }
+
+    #[test]
+    fn deserializes_script_manage_capability() {
+        let capability: Capability = serde_json::from_str("\"script.manage\"").unwrap();
+
+        assert_eq!(capability, Capability::ScriptManage);
+        assert_eq!(capability.as_str(), "script.manage");
     }
 }

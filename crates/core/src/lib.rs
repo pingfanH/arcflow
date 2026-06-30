@@ -19,6 +19,7 @@ pub mod plugin_bundle;
 pub mod plugin_registry_persistence;
 pub mod runtime;
 pub mod safety;
+pub mod script_persistence;
 pub mod script_runner;
 pub mod session;
 
@@ -35,7 +36,8 @@ pub use device::{
 pub use error::CoreError;
 pub use external::{
     authorized_core_command_from_external_request, core_command_from_external_request,
-    execute_plugin_registry_external_request, is_plugin_registry_external_request,
+    execute_plugin_registry_external_request, execute_script_documents_external_request,
+    is_plugin_registry_external_request, is_script_documents_external_request,
     required_capability_for_external_request,
 };
 pub use output::{CoyoteV3OutputController, DeviceBleOutputSink};
@@ -49,5 +51,8 @@ pub use runtime::{
     NoopDeviceOutputController, NoopScriptRunner, ScriptRunResult, ScriptRunner,
 };
 pub use safety::SafetyLimits;
+pub use script_persistence::{
+    ScriptDocumentEntry, ScriptDocumentPersistence, ScriptDocumentPersistenceError,
+};
 pub use script_runner::StorageScriptRunner;
 pub use session::{CoyoteV3StrengthStatus, DeviceSession};

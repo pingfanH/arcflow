@@ -50,6 +50,7 @@ device.read
 wave.generate
 wave.control
 script.run
+script.manage
 storage.private
 ui.panel
 plugin.manage
@@ -59,7 +60,8 @@ external.ws
 
 The default local policy is intentionally conservative. It grants
 `device.read` and `events.subscribe`; broader capabilities such as
-`wave.control` and `plugin.manage` require a future explicit approval surface.
+`wave.control`, `script.manage`, and `plugin.manage` require a future explicit
+approval surface.
 
 ## JSON-RPC
 
@@ -160,6 +162,51 @@ Required capability: `script.run`
 }
 ```
 
+### `script.list`
+
+Required capability: `script.manage`
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "script.list"
+}
+```
+
+### `script.upsert`
+
+Required capability: `script.manage`
+
+The document is validated by the Rust script compiler before it is stored.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 6,
+  "method": "script.upsert",
+  "params": {
+    "scriptId": "script.demo",
+    "documentJson": "{\"id\":\"script.demo\",\"version\":1,\"steps\":[{\"type\":\"wait\",\"durationMs\":250}]}"
+  }
+}
+```
+
+### `script.delete`
+
+Required capability: `script.manage`
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "script.delete",
+  "params": {
+    "scriptId": "script.demo"
+  }
+}
+```
+
 ### `plugin.registry`
 
 Required capability: `plugin.manage`
@@ -167,7 +214,7 @@ Required capability: `plugin.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 5,
+  "id": 8,
   "method": "plugin.registry"
 }
 ```
@@ -179,7 +226,7 @@ Required capability: `plugin.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 6,
+  "id": 9,
   "method": "plugin.installManifest",
   "params": {
     "manifestJson": "{\"id\":\"dev.arcflow.example\",\"name\":\"Example\",\"version\":\"0.1.0\",\"runtime\":\"wasm\",\"entry\":\"dist/plugin.wasm\",\"apiVersion\":\"1\",\"capabilities\":[\"device.read\"]}"
@@ -194,7 +241,7 @@ Required capability: `plugin.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 7,
+  "id": 10,
   "method": "plugin.setEnabled",
   "params": {
     "pluginId": "dev.arcflow.example",
