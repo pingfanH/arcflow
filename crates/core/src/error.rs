@@ -3,6 +3,8 @@
 use core::fmt;
 
 use arcflow_protocol::ProtocolError;
+use arcflow_script::ScriptError;
+use arcflow_storage::StorageError;
 use arcflow_wave::WaveError;
 
 /// Error returned by Rust Core.
@@ -23,6 +25,10 @@ pub enum CoreError {
     Protocol(ProtocolError),
     /// BLE transport failed.
     Transport(String),
+    /// Script parsing, compilation, or execution failed.
+    Script(String),
+    /// Core-owned storage failed.
+    Storage(String),
     /// External-control request could not be routed.
     InvalidExternalRequest(String),
 }
@@ -38,6 +44,8 @@ impl fmt::Display for CoreError {
             Self::Wave(error) => write!(f, "wave error: {error}"),
             Self::Protocol(error) => write!(f, "protocol error: {error}"),
             Self::Transport(error) => write!(f, "transport error: {error}"),
+            Self::Script(error) => write!(f, "script error: {error}"),
+            Self::Storage(error) => write!(f, "storage error: {error}"),
             Self::InvalidExternalRequest(error) => {
                 write!(f, "invalid external-control request: {error}")
             }
@@ -56,5 +64,17 @@ impl From<WaveError> for CoreError {
 impl From<ProtocolError> for CoreError {
     fn from(error: ProtocolError) -> Self {
         Self::Protocol(error)
+    }
+}
+
+impl From<ScriptError> for CoreError {
+    fn from(error: ScriptError) -> Self {
+        Self::Script(error.to_string())
+    }
+}
+
+impl From<StorageError> for CoreError {
+    fn from(error: StorageError) -> Self {
+        Self::Storage(error.to_string())
     }
 }

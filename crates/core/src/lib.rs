@@ -19,6 +19,7 @@ pub mod plugin_bundle;
 pub mod plugin_registry_persistence;
 pub mod runtime;
 pub mod safety;
+pub mod script_runner;
 pub mod session;
 
 pub use ble::{
@@ -48,4 +49,5 @@ pub use runtime::{
     NoopDeviceOutputController, NoopScriptRunner, ScriptRunResult, ScriptRunner,
 };
 pub use safety::SafetyLimits;
+pub use script_runner::StorageScriptRunner;
 pub use session::{CoyoteV3StrengthStatus, DeviceSession};
