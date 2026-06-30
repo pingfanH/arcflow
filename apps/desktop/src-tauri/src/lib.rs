@@ -35,6 +35,11 @@ struct StorageState {
     database_path: PathBuf,
 }
 
+struct RuntimeState {
+    output_controller: Arc<CoyoteV3OutputController<TauriBleOutputSink>>,
+    output_sink: TauriBleOutputSink,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AppStatus {
@@ -85,6 +90,15 @@ struct StorageStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RuntimeStatus {
+    active_output_devices: Vec<String>,
+    ble_output_queued: u64,
+    ble_output_written: u64,
+    ble_output_failed: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct PluginRegistryResponse {
     plugins: Vec<PluginRegistryEntry>,
 }
@@ -126,6 +140,23 @@ fn storage_status(state: tauri::State<'_, StorageState>) -> Result<StorageStatus
         schema_version,
         database_path: state.database_path.display().to_string(),
     })
+}
+
+#[tauri::command]
+fn runtime_status(state: tauri::State<'_, RuntimeState>) -> RuntimeStatus {
+    let stats = state.output_sink.stats();
+
+    RuntimeStatus {
+        active_output_devices: state
+            .output_controller
+            .active_devices()
+            .into_iter()
+            .map(|device_id| device_id.as_str().to_owned())
+            .collect(),
+        ble_output_queued: stats.queued,
+        ble_output_written: stats.written,
+        ble_output_failed: stats.failed,
+    }
 }
 
 #[tauri::command]
@@ -455,11 +486,14 @@ pub fn run() {
                 Arc::new(TauriBleDiscoveryController::unsupported());
             let ble_transport = Arc::new(TauriBleTransport::unsupported());
             let output_sink = TauriBleOutputSink::spawn(ble_transport);
-            let output_controller: Arc<dyn DeviceOutputController> =
-                Arc::new(CoyoteV3OutputController::new(safety_limits, output_sink));
+            let output_controller = Arc::new(CoyoteV3OutputController::new(
+                safety_limits,
+                output_sink.clone(),
+            ));
+            let core_output_controller: Arc<dyn DeviceOutputController> = output_controller.clone();
             let script_actions = CoreScriptActionExecutor::new(
                 Arc::clone(&discovery_controller),
-                Arc::clone(&output_controller),
+                Arc::clone(&core_output_controller),
             );
             let script_queue = ScriptWorkerQueue::spawn(Arc::new(script_actions));
             let script_runner = StorageScriptRunner::with_queue(
@@ -472,11 +506,15 @@ pub fn run() {
                 storage,
                 database_path,
             });
+            app.manage(RuntimeState {
+                output_controller,
+                output_sink,
+            });
             app.manage(CoreState {
                 core: ArcFlowCore::with_controllers(
                     safety_limits,
                     discovery_controller,
-                    output_controller,
+                    core_output_controller,
                     Arc::new(script_runner),
                 ),
             });
@@ -487,6 +525,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             app_status,
             storage_status,
+            runtime_status,
             plugin_registry,
             install_plugin_manifest,
             install_plugin_bundle,

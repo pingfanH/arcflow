@@ -1,6 +1,9 @@
 //! Tauri 2 BLE transport adapter scaffold.
 
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use arcflow_core::{
     BleCharacteristic, BleTransport, BleWrite, CoreError, DeviceBleOutputSink, DeviceId,
@@ -72,6 +75,7 @@ impl BleTransport for TauriBleTransport {
 #[derive(Clone)]
 pub struct TauriBleOutputSink {
     sender: mpsc::UnboundedSender<TauriBleOutputCommand>,
+    stats: Arc<Mutex<TauriBleOutputStats>>,
 }
 
 impl TauriBleOutputSink {
@@ -95,17 +99,31 @@ impl TauriBleOutputSink {
         event_sink: Option<mpsc::UnboundedSender<TauriBleOutputEvent>>,
     ) -> Self {
         let (sender, mut receiver) = mpsc::unbounded_channel::<TauriBleOutputCommand>();
+        let stats = Arc::new(Mutex::new(TauriBleOutputStats::default()));
+        let worker_stats = Arc::clone(&stats);
 
         tokio::spawn(async move {
             while let Some(command) = receiver.recv().await {
                 let event = match transport.write(command.write.clone()).await {
-                    Ok(()) => TauriBleOutputEvent::Written {
-                        device_id: command.device_id,
-                        characteristic: command.write.characteristic,
-                    },
+                    Ok(()) => {
+                        worker_stats
+                            .lock()
+                            .expect("tauri BLE output stats mutex poisoned")
+                            .written += 1;
+                        TauriBleOutputEvent::Written {
+                            device_id: command.device_id,
+                            characteristic: command.write.characteristic,
+                        }
+                    }
                     Err(error) => TauriBleOutputEvent::Failed {
                         device_id: command.device_id,
-                        error: error.to_string(),
+                        error: {
+                            worker_stats
+                                .lock()
+                                .expect("tauri BLE output stats mutex poisoned")
+                                .failed += 1;
+                            error.to_string()
+                        },
                     },
                 };
 
@@ -115,7 +133,16 @@ impl TauriBleOutputSink {
             }
         });
 
-        Self { sender }
+        Self { sender, stats }
+    }
+
+    /// Returns current output sink counters.
+    #[must_use]
+    pub fn stats(&self) -> TauriBleOutputStats {
+        *self
+            .stats
+            .lock()
+            .expect("tauri BLE output stats mutex poisoned")
     }
 }
 
@@ -132,8 +159,24 @@ impl DeviceBleOutputSink for TauriBleOutputSink {
                 device_id: device_id.clone(),
                 write,
             })
-            .map_err(|_| CoreError::Transport("tauri BLE output sink is closed".to_owned()))
+            .map_err(|_| CoreError::Transport("tauri BLE output sink is closed".to_owned()))?;
+        self.stats
+            .lock()
+            .expect("tauri BLE output stats mutex poisoned")
+            .queued += 1;
+        Ok(())
     }
+}
+
+/// Counters for the Tauri BLE output sink worker.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TauriBleOutputStats {
+    /// Writes accepted by the synchronous sink.
+    pub queued: u64,
+    /// Writes completed by the async transport.
+    pub written: u64,
+    /// Writes rejected by the async transport.
+    pub failed: u64,
 }
 
 /// Command queued from Core output controllers to the Tauri transport worker.
@@ -253,5 +296,13 @@ mod tests {
             }
         );
         assert_eq!(provider.writes.lock().unwrap().len(), 1);
+        assert_eq!(
+            sink.stats(),
+            TauriBleOutputStats {
+                queued: 1,
+                written: 1,
+                failed: 0,
+            }
+        );
     }
 }
