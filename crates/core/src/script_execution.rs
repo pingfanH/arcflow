@@ -8,7 +8,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::CoreError;
+use crate::{CoreError, DeviceDiscoveryController, DeviceOutputController};
 
 /// Queue that accepts compiled scripts for asynchronous execution.
 pub trait CompiledScriptQueue: fmt::Debug + Send + Sync {
@@ -23,6 +23,55 @@ pub struct NoopCompiledScriptQueue;
 impl CompiledScriptQueue for NoopCompiledScriptQueue {
     fn enqueue(&self, _script: CompiledScript) -> Result<(), CoreError> {
         Ok(())
+    }
+}
+
+/// Script action executor backed by Core-owned device controllers.
+#[derive(Debug, Clone)]
+pub struct CoreScriptActionExecutor {
+    discovery_controller: Arc<dyn DeviceDiscoveryController>,
+    output_controller: Arc<dyn DeviceOutputController>,
+}
+
+impl CoreScriptActionExecutor {
+    /// Constructs a Core-backed script action executor.
+    #[must_use]
+    pub fn new(
+        discovery_controller: Arc<dyn DeviceDiscoveryController>,
+        output_controller: Arc<dyn DeviceOutputController>,
+    ) -> Self {
+        Self {
+            discovery_controller,
+            output_controller,
+        }
+    }
+}
+
+#[async_trait]
+impl ScriptActionExecutor for CoreScriptActionExecutor {
+    async fn wait(&self, _duration: Duration) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    async fn read_device_status(&self, _device_id: &str) -> Result<(), CoreError> {
+        self.discovery_controller.scan_devices().await?;
+        Ok(())
+    }
+
+    async fn stop_wave(&self, _device_id: &str) -> Result<(), CoreError> {
+        self.output_controller.stop_all_output()?;
+        Ok(())
+    }
+
+    async fn invoke_plugin_hook(
+        &self,
+        plugin_id: &str,
+        hook: &str,
+        _payload: &Value,
+    ) -> Result<(), CoreError> {
+        Err(CoreError::Script(format!(
+            "plugin hook `{hook}` for plugin `{plugin_id}` is not attached"
+        )))
     }
 }
 
@@ -263,15 +312,60 @@ mod tests {
     use std::sync::Mutex;
 
     use arcflow_script::{ScriptCompiler, ScriptDocument};
+    use async_trait::async_trait;
     use serde_json::json;
     use tokio::time::{timeout, Duration as TokioDuration};
 
     use super::*;
+    use crate::{
+        BleAdapterStatus, CoyoteV3OutputRequest, DeviceId, DeviceModel, DeviceScanResult,
+        DeviceStatus, StopOutputResult, SubmitOutputResult,
+    };
 
     #[derive(Debug, Default)]
     struct RecordingActions {
         calls: Mutex<Vec<String>>,
         fail_wave_stop: bool,
+    }
+
+    #[derive(Debug, Default)]
+    struct FakeDiscoveryController {
+        scans: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl DeviceDiscoveryController for FakeDiscoveryController {
+        async fn scan_devices(&self) -> Result<DeviceScanResult, CoreError> {
+            *self.scans.lock().unwrap() += 1;
+            Ok(DeviceScanResult::new(
+                BleAdapterStatus::Ready,
+                vec![DeviceStatus {
+                    id: DeviceId::new("coyote-v3"),
+                    model: DeviceModel::CoyoteV3,
+                    battery_percent: Some(90),
+                    connected: true,
+                }],
+            ))
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct FakeOutputController {
+        stops: Mutex<usize>,
+    }
+
+    impl DeviceOutputController for FakeOutputController {
+        fn submit_coyote_v3_window(
+            &self,
+            request: CoyoteV3OutputRequest,
+        ) -> Result<SubmitOutputResult, CoreError> {
+            Ok(SubmitOutputResult::new(request.device_id, true))
+        }
+
+        fn stop_all_output(&self) -> Result<StopOutputResult, CoreError> {
+            *self.stops.lock().unwrap() += 1;
+            Ok(StopOutputResult::new(vec![DeviceId::new("coyote-v3")]))
+        }
     }
 
     #[async_trait]
@@ -461,6 +555,33 @@ mod tests {
                 error: "script error: wave stop failed".to_owned(),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn core_action_executor_uses_device_controllers() {
+        let discovery = Arc::new(FakeDiscoveryController::default());
+        let output = Arc::new(FakeOutputController::default());
+        let actions = CoreScriptActionExecutor::new(discovery.clone(), output.clone());
+
+        actions.read_device_status("coyote-v3").await.unwrap();
+        actions.stop_wave("coyote-v3").await.unwrap();
+
+        assert_eq!(*discovery.scans.lock().unwrap(), 1);
+        assert_eq!(*output.stops.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn core_action_executor_rejects_unattached_plugin_hooks() {
+        let discovery = Arc::new(FakeDiscoveryController::default());
+        let output = Arc::new(FakeOutputController::default());
+        let actions = CoreScriptActionExecutor::new(discovery, output);
+
+        let error = actions
+            .invoke_plugin_hook("plugin.demo", "afterStop", &json!({}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("not attached"));
     }
 
     fn compile_script(document: ScriptDocument) -> CompiledScript {

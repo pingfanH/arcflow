@@ -6,9 +6,11 @@ use std::{
 use arcflow_core::{
     execute_plugin_registry_external_request, execute_script_documents_external_request,
     is_plugin_registry_external_request, is_script_documents_external_request, ArcFlowCore,
-    DeviceModel, DeviceScanResult, DeviceStatus, NoopScriptActionExecutor, PluginBundle,
-    PluginRegistryEntry, PluginRegistryPersistence, SafetyLimits, ScriptDocumentEntry,
-    ScriptDocumentPersistence, ScriptWorkerQueue, StopOutputResult, StorageScriptRunner,
+    CoreScriptActionExecutor, DeviceDiscoveryController, DeviceModel, DeviceOutputController,
+    DeviceScanResult, DeviceStatus, NoopDeviceDiscoveryController, NoopDeviceOutputController,
+    PluginBundle, PluginRegistryEntry, PluginRegistryPersistence, SafetyLimits,
+    ScriptDocumentEntry, ScriptDocumentPersistence, ScriptWorkerQueue, StopOutputResult,
+    StorageScriptRunner,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
@@ -448,7 +450,15 @@ pub fn run() {
             std::fs::create_dir_all(&app_data_dir)?;
             let database_path = app_data_dir.join("arcflow.sqlite3");
             let storage = Arc::new(Mutex::new(Storage::open(&database_path)?));
-            let script_queue = ScriptWorkerQueue::spawn(Arc::new(NoopScriptActionExecutor));
+            let discovery_controller: Arc<dyn DeviceDiscoveryController> =
+                Arc::new(NoopDeviceDiscoveryController);
+            let output_controller: Arc<dyn DeviceOutputController> =
+                Arc::new(NoopDeviceOutputController);
+            let script_actions = CoreScriptActionExecutor::new(
+                Arc::clone(&discovery_controller),
+                Arc::clone(&output_controller),
+            );
+            let script_queue = ScriptWorkerQueue::spawn(Arc::new(script_actions));
             let script_runner = StorageScriptRunner::with_queue(
                 Arc::clone(&storage),
                 ScriptCompiler::default(),
@@ -460,8 +470,10 @@ pub fn run() {
                 database_path,
             });
             app.manage(CoreState {
-                core: ArcFlowCore::with_script_runner(
+                core: ArcFlowCore::with_controllers(
                     SafetyLimits::conservative(),
+                    discovery_controller,
+                    output_controller,
                     Arc::new(script_runner),
                 ),
             });
