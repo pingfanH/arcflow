@@ -79,8 +79,12 @@ fn scan_devices(state: tauri::State<'_, CoreState>) -> DeviceScanResponse {
 }
 
 #[tauri::command]
-fn stop_output(state: tauri::State<'_, CoreState>) -> StopOutputResponse {
-    stop_output_response(state.core.stop_all_output())
+fn stop_output(state: tauri::State<'_, CoreState>) -> Result<StopOutputResponse, String> {
+    state
+        .core
+        .stop_all_output()
+        .map(stop_output_response)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

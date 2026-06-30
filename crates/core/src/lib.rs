@@ -30,6 +30,6 @@ pub use external::{
     required_capability_for_external_request,
 };
 pub use plugin_api::{PluginApi, PluginApiError};
-pub use runtime::ArcFlowCore;
+pub use runtime::{ArcFlowCore, DeviceOutputController, NoopDeviceOutputController};
 pub use safety::SafetyLimits;
 pub use session::DeviceSession;

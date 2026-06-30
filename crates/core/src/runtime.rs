@@ -1,5 +1,7 @@
 //! High-level ArcFlow Core runtime facade.
 
+use std::{fmt, sync::Arc};
+
 use arcflow_external_control::{ClientSession, JsonRpcRequest};
 use serde_json::{json, Value};
 
@@ -8,17 +10,46 @@ use crate::{
     DeviceId, DeviceScanResult, DeviceStatus, SafetyLimits, StopOutputResult,
 };
 
+/// Output controller used by Core to stop active device sessions.
+pub trait DeviceOutputController: fmt::Debug + Send + Sync {
+    /// Stops output on every active session known to the controller.
+    fn stop_all_output(&self) -> Result<StopOutputResult, CoreError>;
+}
+
+/// Output controller used before a platform BLE Adapter is attached.
+#[derive(Debug, Default)]
+pub struct NoopDeviceOutputController;
+
+impl DeviceOutputController for NoopDeviceOutputController {
+    fn stop_all_output(&self) -> Result<StopOutputResult, CoreError> {
+        Ok(StopOutputResult::new(Vec::new()))
+    }
+}
+
 /// Application core facade shared by desktop, mobile, plugins, and external control.
 #[derive(Debug, Clone)]
 pub struct ArcFlowCore {
     safety_limits: SafetyLimits,
+    output_controller: Arc<dyn DeviceOutputController>,
 }
 
 impl ArcFlowCore {
     /// Constructs a core runtime with explicit safety limits.
     #[must_use]
     pub fn new(safety_limits: SafetyLimits) -> Self {
-        Self { safety_limits }
+        Self::with_output_controller(safety_limits, Arc::new(NoopDeviceOutputController))
+    }
+
+    /// Constructs a core runtime with an explicit output controller.
+    #[must_use]
+    pub fn with_output_controller(
+        safety_limits: SafetyLimits,
+        output_controller: Arc<dyn DeviceOutputController>,
+    ) -> Self {
+        Self {
+            safety_limits,
+            output_controller,
+        }
     }
 
     /// Returns the active safety limits.
@@ -38,9 +69,8 @@ impl ArcFlowCore {
     }
 
     /// Stops all active output sessions known by Core.
-    #[must_use]
-    pub fn stop_all_output(&self) -> StopOutputResult {
-        StopOutputResult::new(Vec::new())
+    pub fn stop_all_output(&self) -> Result<StopOutputResult, CoreError> {
+        self.output_controller.stop_all_output()
     }
 
     /// Executes an external-control request after capability authorization.
@@ -66,7 +96,7 @@ impl ArcFlowCore {
                 "deviceId": device_id.as_str(),
             })),
             CoreCommand::StopOutput { device_id } => {
-                let result = self.stop_all_output();
+                let result = self.stop_all_output()?;
                 let stopped = result
                     .stopped_devices
                     .iter()
@@ -130,9 +160,29 @@ mod tests {
     #[test]
     fn stop_all_output_is_safe_with_no_sessions() {
         let core = ArcFlowCore::default();
-        let result = core.stop_all_output();
+        let result = core.stop_all_output().unwrap();
 
         assert!(result.stopped_devices.is_empty());
+    }
+
+    #[test]
+    fn stop_all_output_uses_output_controller() {
+        #[derive(Debug)]
+        struct FakeOutputController;
+
+        impl DeviceOutputController for FakeOutputController {
+            fn stop_all_output(&self) -> Result<StopOutputResult, CoreError> {
+                Ok(StopOutputResult::new(vec![DeviceId::new("coyote-v3")]))
+            }
+        }
+
+        let core = ArcFlowCore::with_output_controller(
+            SafetyLimits::conservative(),
+            Arc::new(FakeOutputController),
+        );
+        let result = core.stop_all_output().unwrap();
+
+        assert_eq!(result.stopped_devices, vec![DeviceId::new("coyote-v3")]);
     }
 
     #[test]
