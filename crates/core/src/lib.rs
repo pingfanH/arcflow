@@ -13,6 +13,7 @@ pub mod coyote;
 pub mod device;
 pub mod error;
 pub mod external;
+pub mod output;
 pub mod plugin_api;
 pub mod plugin_registry_persistence;
 pub mod runtime;
@@ -35,6 +36,7 @@ pub use external::{
     execute_plugin_registry_external_request, is_plugin_registry_external_request,
     required_capability_for_external_request,
 };
+pub use output::{CoyoteV3OutputController, DeviceBleOutputSink};
 pub use plugin_api::{PluginApi, PluginApiError};
 pub use plugin_registry_persistence::{
     PluginRegistryEntry, PluginRegistryPersistence, PluginRegistryPersistenceError,
