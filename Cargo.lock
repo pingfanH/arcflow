@@ -71,6 +71,7 @@ dependencies = [
  "arcflow-external-control",
  "arcflow-script",
  "arcflow-storage",
+ "arcflow-tauri-platform",
  "serde",
  "serde_json",
  "tauri",
@@ -117,6 +118,15 @@ name = "arcflow-storage"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
+]
+
+[[package]]
+name = "arcflow-tauri-platform"
+version = "0.1.0"
+dependencies = [
+ "arcflow-core",
+ "async-trait",
+ "tokio",
 ]
 
 [[package]]

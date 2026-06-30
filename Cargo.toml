@@ -7,6 +7,7 @@ members = [
     "crates/protocol",
     "crates/script",
     "crates/storage",
+    "crates/tauri-platform",
     "crates/wave",
 ]
 resolver = "2"
@@ -21,6 +22,7 @@ arcflow-plugin-runtime = { path = "crates/plugin-runtime" }
 arcflow-protocol = { path = "crates/protocol" }
 arcflow-script = { path = "crates/script" }
 arcflow-storage = { path = "crates/storage" }
+arcflow-tauri-platform = { path = "crates/tauri-platform" }
 arcflow-wave = { path = "crates/wave" }
 async-trait = "0.1"
 futures-util = "0.3"

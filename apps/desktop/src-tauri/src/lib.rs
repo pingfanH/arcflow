@@ -7,10 +7,9 @@ use arcflow_core::{
     execute_plugin_registry_external_request, execute_script_documents_external_request,
     is_plugin_registry_external_request, is_script_documents_external_request, ArcFlowCore,
     CoreScriptActionExecutor, DeviceDiscoveryController, DeviceModel, DeviceOutputController,
-    DeviceScanResult, DeviceStatus, NoopDeviceDiscoveryController, NoopDeviceOutputController,
-    PluginBundle, PluginRegistryEntry, PluginRegistryPersistence, SafetyLimits,
-    ScriptDocumentEntry, ScriptDocumentPersistence, ScriptWorkerQueue, StopOutputResult,
-    StorageScriptRunner,
+    DeviceScanResult, DeviceStatus, NoopDeviceOutputController, PluginBundle, PluginRegistryEntry,
+    PluginRegistryPersistence, SafetyLimits, ScriptDocumentEntry, ScriptDocumentPersistence,
+    ScriptWorkerQueue, StopOutputResult, StorageScriptRunner,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
@@ -18,6 +17,7 @@ use arcflow_external_control::{
 };
 use arcflow_script::ScriptCompiler;
 use arcflow_storage::Storage;
+use arcflow_tauri_platform::TauriBleDiscoveryController;
 use serde::Serialize;
 use tauri::Manager;
 
@@ -451,7 +451,7 @@ pub fn run() {
             let database_path = app_data_dir.join("arcflow.sqlite3");
             let storage = Arc::new(Mutex::new(Storage::open(&database_path)?));
             let discovery_controller: Arc<dyn DeviceDiscoveryController> =
-                Arc::new(NoopDeviceDiscoveryController);
+                Arc::new(TauriBleDiscoveryController::unsupported());
             let output_controller: Arc<dyn DeviceOutputController> =
                 Arc::new(NoopDeviceOutputController);
             let script_actions = CoreScriptActionExecutor::new(

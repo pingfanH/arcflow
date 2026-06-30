@@ -22,6 +22,7 @@ arcflow-core.workspace = true
 arcflow-external-control.workspace = true
 arcflow-script.workspace = true
 arcflow-storage.workspace = true
+arcflow-tauri-platform.workspace = true
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde.workspace = true

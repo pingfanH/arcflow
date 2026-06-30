@@ -1,0 +1,16 @@
+[package]
+name = "arcflow-tauri-platform"
+version = "0.1.0"
+edition.workspace = true
+description = "Tauri 2 platform adapters for ArcFlow."
+publish = false
+
+[dependencies]
+arcflow-core.workspace = true
+async-trait.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lib]
+path = "src/lib.rs"
