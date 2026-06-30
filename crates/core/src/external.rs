@@ -2,7 +2,9 @@
 
 use arcflow_external_control::{ClientSession, JsonRpcRequest};
 use arcflow_plugin_runtime::Capability;
+use arcflow_protocol::coyote::v3::{StrengthMode, StrengthModes};
 use arcflow_storage::Storage;
+use arcflow_wave::{ChannelOutput, ChannelWindow, CoyoteV3Window, WavePoint};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -37,6 +39,7 @@ pub fn required_capability_for_external_request(
 ) -> Result<Capability, CoreError> {
     match request.method.as_str() {
         "device.status" => Ok(Capability::DeviceRead),
+        "wave.submitWindow" => Ok(Capability::WaveControl),
         "wave.stop" => Ok(Capability::WaveControl),
         "script.run" => Ok(Capability::ScriptRun),
         method => Err(CoreError::InvalidExternalRequest(format!(
@@ -55,6 +58,10 @@ pub fn core_command_from_external_request(
             Ok(CoreCommand::ReadDeviceStatus {
                 device_id: DeviceId::new(params.device_id),
             })
+        }
+        "wave.submitWindow" => {
+            let params: SubmitWindowParams = read_params(request)?;
+            submit_window_command(params)
         }
         "wave.stop" => {
             let params: DeviceParams = read_params(request)?;
@@ -142,6 +149,49 @@ struct ScriptRunParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SubmitWindowParams {
+    device_id: String,
+    sequence: u8,
+    #[serde(default)]
+    strength_modes: StrengthModesParams,
+    #[serde(default)]
+    a_strength: u8,
+    #[serde(default)]
+    b_strength: u8,
+    #[serde(default)]
+    channel_a: Option<[WavePointParams; 4]>,
+    #[serde(default)]
+    channel_b: Option<[WavePointParams; 4]>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StrengthModesParams {
+    #[serde(default)]
+    a: StrengthModeParam,
+    #[serde(default)]
+    b: StrengthModeParam,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StrengthModeParam {
+    #[default]
+    Unchanged,
+    Increase,
+    Decrease,
+    Absolute,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WavePointParams {
+    period_ms: u16,
+    strength: u8,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PluginInstallManifestParams {
     manifest_json: String,
 }
@@ -151,6 +201,49 @@ struct PluginInstallManifestParams {
 struct PluginSetEnabledParams {
     plugin_id: String,
     enabled: bool,
+}
+
+fn submit_window_command(params: SubmitWindowParams) -> Result<CoreCommand, CoreError> {
+    Ok(CoreCommand::SubmitCoyoteV3Window {
+        device_id: DeviceId::new(params.device_id),
+        window: CoyoteV3Window::new(
+            channel_output(params.channel_a)?,
+            channel_output(params.channel_b)?,
+        ),
+        sequence: params.sequence,
+        strength_modes: StrengthModes::new(
+            strength_mode(params.strength_modes.a),
+            strength_mode(params.strength_modes.b),
+        ),
+        a_strength: params.a_strength,
+        b_strength: params.b_strength,
+    })
+}
+
+fn channel_output(points: Option<[WavePointParams; 4]>) -> Result<ChannelOutput, CoreError> {
+    let Some(points) = points else {
+        return Ok(ChannelOutput::Disabled);
+    };
+
+    Ok(ChannelOutput::Window(ChannelWindow::new([
+        wave_point(points[0])?,
+        wave_point(points[1])?,
+        wave_point(points[2])?,
+        wave_point(points[3])?,
+    ])))
+}
+
+fn wave_point(point: WavePointParams) -> Result<WavePoint, CoreError> {
+    Ok(WavePoint::new(point.period_ms, point.strength)?)
+}
+
+fn strength_mode(mode: StrengthModeParam) -> StrengthMode {
+    match mode {
+        StrengthModeParam::Unchanged => StrengthMode::Unchanged,
+        StrengthModeParam::Increase => StrengthMode::Increase,
+        StrengthModeParam::Decrease => StrengthMode::Decrease,
+        StrengthModeParam::Absolute => StrengthMode::Absolute,
+    }
 }
 
 fn read_params<T>(request: &JsonRpcRequest) -> Result<T, CoreError>
@@ -208,6 +301,45 @@ mod tests {
             command,
             CoreCommand::StopOutput {
                 device_id: DeviceId::new("coyote-v3")
+            }
+        );
+    }
+
+    #[test]
+    fn routes_wave_submit_window_request() {
+        let request = JsonRpcRequest::new(
+            RequestId::Number(10),
+            "wave.submitWindow",
+            Some(json!({
+                "deviceId": "coyote-v3",
+                "sequence": 4,
+                "strengthModes": {
+                    "a": "absolute",
+                    "b": "unchanged"
+                },
+                "aStrength": 8,
+                "bStrength": 0,
+                "channelA": [
+                    {"periodMs": 10, "strength": 0},
+                    {"periodMs": 10, "strength": 10},
+                    {"periodMs": 10, "strength": 20},
+                    {"periodMs": 10, "strength": 30}
+                ],
+                "channelB": null
+            })),
+        );
+
+        let command = core_command_from_external_request(&request).unwrap();
+
+        assert_eq!(
+            command,
+            CoreCommand::SubmitCoyoteV3Window {
+                device_id: DeviceId::new("coyote-v3"),
+                window: safe_window(),
+                sequence: 4,
+                strength_modes: StrengthModes::new(StrengthMode::Absolute, StrengthMode::Unchanged),
+                a_strength: 8,
+                b_strength: 0,
             }
         );
     }
@@ -344,5 +476,16 @@ mod tests {
             execute_plugin_registry_external_request(&session, &request, &storage).unwrap_err();
 
         assert!(matches!(error, CoreError::InvalidExternalRequest(_)));
+    }
+
+    fn safe_window() -> CoyoteV3Window {
+        let channel = ChannelWindow::new([
+            WavePoint::new(10, 0).unwrap(),
+            WavePoint::new(10, 10).unwrap(),
+            WavePoint::new(10, 20).unwrap(),
+            WavePoint::new(10, 30).unwrap(),
+        ]);
+
+        CoyoteV3Window::new(ChannelOutput::Window(channel), ChannelOutput::Disabled)
     }
 }
