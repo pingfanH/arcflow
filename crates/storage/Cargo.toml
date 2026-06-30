@@ -1,0 +1,12 @@
+[package]
+name = "arcflow-storage"
+version = "0.1.0"
+edition.workspace = true
+description = "SQLite storage for ArcFlow."
+publish = false
+
+[dependencies]
+rusqlite.workspace = true
+
+[lib]
+path = "src/lib.rs"
