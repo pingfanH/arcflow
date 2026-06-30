@@ -8,6 +8,7 @@
 
 pub mod plugin_kv;
 pub mod plugin_registry;
+pub mod scripts;
 
 use std::{
     path::Path,
@@ -18,9 +19,10 @@ use rusqlite::Connection;
 
 pub use plugin_kv::PluginKvStore;
 pub use plugin_registry::{PluginRegistryStore, StoredPluginRecord};
+pub use scripts::{ScriptStore, StoredScriptRecord};
 
 /// Current storage schema version.
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// SQLite storage handle.
 pub struct Storage {
@@ -54,6 +56,12 @@ impl Storage {
     #[must_use]
     pub fn plugin_registry(&self) -> PluginRegistryStore<'_> {
         PluginRegistryStore::new(&self.connection)
+    }
+
+    /// Returns a persistent script store Interface.
+    #[must_use]
+    pub fn scripts(&self) -> ScriptStore<'_> {
+        ScriptStore::new(&self.connection)
     }
 
     /// Returns the current applied schema version.
@@ -139,6 +147,27 @@ impl Storage {
                 .execute(
                     "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
                     rusqlite::params![3, unix_time_seconds()],
+                )
+                .map_err(StorageError::Sql)?;
+        }
+
+        if self.schema_version()? < 4 {
+            self.connection
+                .execute_batch(
+                    "
+                    CREATE TABLE scripts (
+                        script_id TEXT PRIMARY KEY,
+                        document_json TEXT NOT NULL,
+                        updated_at INTEGER NOT NULL
+                    );
+                    ",
+                )
+                .map_err(StorageError::Sql)?;
+
+            self.connection
+                .execute(
+                    "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
+                    rusqlite::params![4, unix_time_seconds()],
                 )
                 .map_err(StorageError::Sql)?;
         }
@@ -259,6 +288,7 @@ mod tests {
         assert_eq!(storage.schema_version().unwrap(), SCHEMA_VERSION);
         assert!(record.enabled);
         assert_eq!(record.bundle_root, None);
+        assert!(storage.scripts().list().unwrap().is_empty());
 
         drop(storage);
         fs::remove_file(path).unwrap();
