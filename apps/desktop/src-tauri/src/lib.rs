@@ -1,15 +1,13 @@
 use std::sync::{Arc, Mutex};
 
 use arcflow_core::{
-    authorized_core_command_from_external_request, ArcFlowCore, CoreCommand, DeviceModel,
-    DeviceScanResult, DeviceStatus, SafetyLimits, StopOutputResult,
+    ArcFlowCore, DeviceModel, DeviceScanResult, DeviceStatus, SafetyLimits, StopOutputResult,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
     WsGatewayService, WsRequestHandler, DEFAULT_LOCAL_BIND,
 };
 use serde::Serialize;
-use serde_json::{json, Value};
 
 #[derive(Default)]
 struct ExternalControlState {
@@ -101,6 +99,7 @@ fn external_control_status(state: tauri::State<'_, ExternalControlState>) -> Ext
 #[tauri::command]
 async fn start_external_control(
     state: tauri::State<'_, ExternalControlState>,
+    core_state: tauri::State<'_, CoreState>,
 ) -> Result<ExternalControlStatus, String> {
     {
         let guard = state
@@ -115,7 +114,7 @@ async fn start_external_control(
 
     let service = WsGatewayService::new(DEFAULT_LOCAL_BIND, GatewayPolicy::local_default());
     let handle = service
-        .start(external_request_handler())
+        .start(external_request_handler(core_state.core.clone()))
         .await
         .map_err(|error| error.to_string())?;
     let status = external_control_status_from_handle(&handle);
@@ -181,40 +180,15 @@ fn external_control_status_from_handle(handle: &WsGatewayHandle) -> ExternalCont
     }
 }
 
-fn external_request_handler() -> WsRequestHandler {
-    Arc::new(|session: &ClientSession, request: JsonRpcRequest| {
+fn external_request_handler(core: ArcFlowCore) -> WsRequestHandler {
+    Arc::new(move |session: &ClientSession, request: JsonRpcRequest| {
         let id = request.id.clone();
 
-        match authorized_core_command_from_external_request(session, &request) {
-            Ok(command) => JsonRpcResponse::ok(id, external_command_ack(command)),
+        match core.execute_external_request(session, &request) {
+            Ok(result) => JsonRpcResponse::ok(id, result),
             Err(error) => JsonRpcResponse::error(id, RpcError::new(-32000, error.to_string())),
         }
     })
-}
-
-fn external_command_ack(command: CoreCommand) -> Value {
-    match command {
-        CoreCommand::ReadDeviceStatus { device_id } => json!({
-            "accepted": true,
-            "command": "device.status",
-            "deviceId": device_id.as_str(),
-        }),
-        CoreCommand::SubmitCoyoteV3Window { device_id, .. } => json!({
-            "accepted": true,
-            "command": "wave.submitWindow",
-            "deviceId": device_id.as_str(),
-        }),
-        CoreCommand::StopOutput { device_id } => json!({
-            "accepted": true,
-            "command": "wave.stop",
-            "deviceId": device_id.as_str(),
-        }),
-        CoreCommand::RunScript { script_id } => json!({
-            "accepted": true,
-            "command": "script.run",
-            "scriptId": script_id,
-        }),
-    }
 }
 
 fn device_scan_response(result: DeviceScanResult) -> DeviceScanResponse {
