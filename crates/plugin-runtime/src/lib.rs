@@ -10,12 +10,14 @@ pub mod capability;
 pub mod host;
 pub mod manifest;
 pub mod registry;
+pub mod router;
 pub mod runtime;
 
 pub use capability::Capability;
 pub use host::{PluginHost, PluginHostError};
 pub use manifest::{ManifestError, PluginManifest, RuntimeKind};
 pub use registry::{PluginRecord, PluginRegistry, PluginRegistryError};
+pub use router::RuntimeRouter;
 pub use runtime::{
     PluginAction, PluginInvocation, PluginOutput, RuntimeAdapter, RuntimeError, RuntimeHandle,
 };
