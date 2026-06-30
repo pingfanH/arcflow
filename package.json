@@ -1,0 +1,11 @@
+{
+  "name": "arcflow",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "dev:desktop": "pnpm --filter @arcflow/desktop tauri dev",
+    "build:desktop": "pnpm --filter @arcflow/desktop tauri build",
+    "check:frontend": "pnpm --filter @arcflow/desktop build"
+  }
+}

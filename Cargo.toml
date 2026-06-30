@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "apps/desktop/src-tauri",
     "crates/core",
     "crates/external-control",
     "crates/plugin-runtime",
@@ -12,6 +13,7 @@ resolver = "2"
 edition = "2021"
 
 [workspace.dependencies]
+arcflow-core = { path = "crates/core" }
 arcflow-external-control = { path = "crates/external-control" }
 arcflow-plugin-runtime = { path = "crates/plugin-runtime" }
 arcflow-protocol = { path = "crates/protocol" }

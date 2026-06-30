@@ -7,6 +7,10 @@ The project is being built as a Rust-first core with React frontends. Desktop an
 ## Current workspace
 
 ```text
+apps/
+  desktop/      Tauri 2 + React desktop app; also seeds mobile targets.
+  mobile/       Mobile target notes for the shared Tauri 2 app.
+
 crates/
   core/          Core orchestration types and Rust-only device control surface.
   external-control/
@@ -25,4 +29,11 @@ Run the current Rust checks with:
 
 ```sh
 cargo test --workspace
+```
+
+Run the desktop frontend build with:
+
+```sh
+pnpm install
+pnpm check:frontend
 ```
