@@ -6,6 +6,7 @@ use arcflow_script::{CompiledScript, ScriptStep};
 use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::Value;
+use tokio::sync::mpsc;
 
 use crate::CoreError;
 
@@ -23,6 +24,88 @@ impl CompiledScriptQueue for NoopCompiledScriptQueue {
     fn enqueue(&self, _script: CompiledScript) -> Result<(), CoreError> {
         Ok(())
     }
+}
+
+/// Queue backed by an asynchronous script worker task.
+#[derive(Clone)]
+pub struct ScriptWorkerQueue {
+    sender: mpsc::UnboundedSender<CompiledScript>,
+}
+
+impl ScriptWorkerQueue {
+    /// Spawns a script worker and returns its queue handle.
+    #[must_use]
+    pub fn spawn(actions: Arc<dyn ScriptActionExecutor>) -> Self {
+        Self::spawn_with_events(actions, None)
+    }
+
+    /// Spawns a script worker with an optional event sink for tests or telemetry.
+    #[must_use]
+    pub fn spawn_with_event_sink(
+        actions: Arc<dyn ScriptActionExecutor>,
+        event_sink: mpsc::UnboundedSender<ScriptWorkerEvent>,
+    ) -> Self {
+        Self::spawn_with_events(actions, Some(event_sink))
+    }
+
+    fn spawn_with_events(
+        actions: Arc<dyn ScriptActionExecutor>,
+        event_sink: Option<mpsc::UnboundedSender<ScriptWorkerEvent>>,
+    ) -> Self {
+        let (sender, mut receiver) = mpsc::unbounded_channel::<CompiledScript>();
+        let engine = ScriptExecutionEngine::new(actions);
+
+        tokio::spawn(async move {
+            while let Some(script) = receiver.recv().await {
+                let script_id = script.id().to_owned();
+                let event = match engine.execute(&script).await {
+                    Ok(report) => ScriptWorkerEvent::Completed(report),
+                    Err(error) => ScriptWorkerEvent::Failed {
+                        script_id,
+                        error: error.to_string(),
+                    },
+                };
+
+                if let Some(event_sink) = &event_sink {
+                    let _ = event_sink.send(event);
+                }
+            }
+        });
+
+        Self { sender }
+    }
+}
+
+impl fmt::Debug for ScriptWorkerQueue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ScriptWorkerQueue").finish_non_exhaustive()
+    }
+}
+
+impl CompiledScriptQueue for ScriptWorkerQueue {
+    fn enqueue(&self, script: CompiledScript) -> Result<(), CoreError> {
+        self.sender
+            .send(script)
+            .map_err(|_| CoreError::Script("script worker queue is closed".to_owned()))
+    }
+}
+
+/// Event emitted by the asynchronous script worker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ScriptWorkerEvent {
+    /// Script finished successfully.
+    Completed(
+        /// Execution report.
+        ScriptExecutionReport,
+    ),
+    /// Script failed during execution.
+    Failed {
+        /// Failed script id.
+        script_id: String,
+        /// Rendered error message.
+        error: String,
+    },
 }
 
 /// Host action surface used by the script execution engine.
@@ -181,6 +264,7 @@ mod tests {
 
     use arcflow_script::{ScriptCompiler, ScriptDocument};
     use serde_json::json;
+    use tokio::time::{timeout, Duration as TokioDuration};
 
     use super::*;
 
@@ -315,6 +399,67 @@ mod tests {
         assert_eq!(
             *actions.calls.lock().unwrap(),
             vec!["wait:5", "stop:coyote-v3"]
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_executes_queued_scripts() {
+        let actions = Arc::new(RecordingActions::default());
+        let (event_sender, mut events) = mpsc::unbounded_channel();
+        let queue = ScriptWorkerQueue::spawn_with_event_sink(actions.clone(), event_sender);
+        let script = compile_script(ScriptDocument {
+            id: "script.worker".to_owned(),
+            version: 1,
+            steps: vec![ScriptStep::Wait { duration_ms: 5 }],
+        });
+
+        queue.enqueue(script).unwrap();
+
+        let event = timeout(TokioDuration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event,
+            ScriptWorkerEvent::Completed(ScriptExecutionReport {
+                script_id: "script.worker".to_owned(),
+                steps: vec![ScriptStepExecution {
+                    index: 0,
+                    kind: ScriptStepKind::Wait,
+                }],
+            })
+        );
+        assert_eq!(*actions.calls.lock().unwrap(), vec!["wait:5"]);
+    }
+
+    #[tokio::test]
+    async fn worker_reports_failed_scripts() {
+        let actions = Arc::new(RecordingActions {
+            fail_wave_stop: true,
+            ..RecordingActions::default()
+        });
+        let (event_sender, mut events) = mpsc::unbounded_channel();
+        let queue = ScriptWorkerQueue::spawn_with_event_sink(actions, event_sender);
+        let script = compile_script(ScriptDocument {
+            id: "script.worker".to_owned(),
+            version: 1,
+            steps: vec![ScriptStep::WaveStop {
+                device_id: "coyote-v3".to_owned(),
+            }],
+        });
+
+        queue.enqueue(script).unwrap();
+
+        let event = timeout(TokioDuration::from_secs(1), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event,
+            ScriptWorkerEvent::Failed {
+                script_id: "script.worker".to_owned(),
+                error: "script error: wave stop failed".to_owned(),
+            }
         );
     }
 

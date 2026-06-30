@@ -55,6 +55,7 @@ pub use safety::SafetyLimits;
 pub use script_execution::{
     CompiledScriptQueue, NoopCompiledScriptQueue, NoopScriptActionExecutor, ScriptActionExecutor,
     ScriptExecutionEngine, ScriptExecutionReport, ScriptStepExecution, ScriptStepKind,
+    ScriptWorkerEvent, ScriptWorkerQueue,
 };
 pub use script_persistence::{
     ScriptDocumentEntry, ScriptDocumentPersistence, ScriptDocumentPersistenceError,

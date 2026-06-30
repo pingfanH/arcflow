@@ -6,9 +6,9 @@ use std::{
 use arcflow_core::{
     execute_plugin_registry_external_request, execute_script_documents_external_request,
     is_plugin_registry_external_request, is_script_documents_external_request, ArcFlowCore,
-    DeviceModel, DeviceScanResult, DeviceStatus, PluginBundle, PluginRegistryEntry,
-    PluginRegistryPersistence, SafetyLimits, ScriptDocumentEntry, ScriptDocumentPersistence,
-    StopOutputResult, StorageScriptRunner,
+    DeviceModel, DeviceScanResult, DeviceStatus, NoopScriptActionExecutor, PluginBundle,
+    PluginRegistryEntry, PluginRegistryPersistence, SafetyLimits, ScriptDocumentEntry,
+    ScriptDocumentPersistence, ScriptWorkerQueue, StopOutputResult, StorageScriptRunner,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
@@ -448,8 +448,12 @@ pub fn run() {
             std::fs::create_dir_all(&app_data_dir)?;
             let database_path = app_data_dir.join("arcflow.sqlite3");
             let storage = Arc::new(Mutex::new(Storage::open(&database_path)?));
-            let script_runner =
-                StorageScriptRunner::new(Arc::clone(&storage), ScriptCompiler::default());
+            let script_queue = ScriptWorkerQueue::spawn(Arc::new(NoopScriptActionExecutor));
+            let script_runner = StorageScriptRunner::with_queue(
+                Arc::clone(&storage),
+                ScriptCompiler::default(),
+                Arc::new(script_queue),
+            );
 
             app.manage(StorageState {
                 storage,
