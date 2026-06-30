@@ -183,6 +183,13 @@ fn ensure_not_blank(name: &'static str, value: &str) -> Result<(), StorageError>
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use rusqlite::Connection;
+
     use super::*;
 
     #[test]
@@ -190,5 +197,78 @@ mod tests {
         let storage = Storage::in_memory().unwrap();
 
         assert_eq!(storage.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrates_v2_plugin_registry_to_v3_bundle_roots() {
+        let path = temp_db_path("v2-plugin-registry");
+        {
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    r#"
+                    CREATE TABLE schema_migrations (
+                        version INTEGER PRIMARY KEY,
+                        applied_at INTEGER NOT NULL
+                    );
+                    INSERT INTO schema_migrations (version, applied_at) VALUES (1, 1);
+                    INSERT INTO schema_migrations (version, applied_at) VALUES (2, 2);
+
+                    CREATE TABLE plugin_kv (
+                        plugin_id TEXT NOT NULL,
+                        key TEXT NOT NULL,
+                        value BLOB NOT NULL,
+                        updated_at INTEGER NOT NULL,
+                        PRIMARY KEY (plugin_id, key)
+                    );
+
+                    CREATE TABLE plugin_registry (
+                        plugin_id TEXT PRIMARY KEY,
+                        manifest_json TEXT NOT NULL,
+                        enabled INTEGER NOT NULL DEFAULT 0,
+                        installed_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL
+                    );
+
+                    INSERT INTO plugin_registry (
+                        plugin_id,
+                        manifest_json,
+                        enabled,
+                        installed_at,
+                        updated_at
+                    )
+                    VALUES (
+                        'plugin.legacy',
+                        '{"id":"plugin.legacy","name":"Legacy","version":"1.0.0","runtime":"wasm","entry":"dist/plugin.wasm","apiVersion":"1","capabilities":["device.read"]}',
+                        1,
+                        2,
+                        2
+                    );
+                    "#,
+                )
+                .unwrap();
+        }
+
+        let storage = Storage::open(&path).unwrap();
+        let record = storage
+            .plugin_registry()
+            .get("plugin.legacy")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(storage.schema_version().unwrap(), SCHEMA_VERSION);
+        assert!(record.enabled);
+        assert_eq!(record.bundle_root, None);
+
+        drop(storage);
+        fs::remove_file(path).unwrap();
+    }
+
+    fn temp_db_path(name: &str) -> std::path::PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("arcflow-storage-{name}-{suffix}.sqlite3"))
     }
 }
