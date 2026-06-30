@@ -19,6 +19,7 @@ pub mod plugin_bundle;
 pub mod plugin_registry_persistence;
 pub mod runtime;
 pub mod safety;
+pub mod script_execution;
 pub mod script_persistence;
 pub mod script_runner;
 pub mod session;
@@ -51,6 +52,10 @@ pub use runtime::{
     NoopDeviceOutputController, NoopScriptRunner, ScriptRunResult, ScriptRunner,
 };
 pub use safety::SafetyLimits;
+pub use script_execution::{
+    NoopScriptActionExecutor, ScriptActionExecutor, ScriptExecutionEngine, ScriptExecutionReport,
+    ScriptStepExecution, ScriptStepKind,
+};
 pub use script_persistence::{
     ScriptDocumentEntry, ScriptDocumentPersistence, ScriptDocumentPersistenceError,
 };
