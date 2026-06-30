@@ -8,6 +8,7 @@
 
 pub mod protocol;
 pub mod security;
+pub mod server;
 pub mod session;
 
 pub use protocol::{
@@ -15,4 +16,5 @@ pub use protocol::{
     PROTOCOL_VERSION,
 };
 pub use security::{ExposureMode, DEFAULT_LOCAL_BIND};
+pub use server::{AcceptedSession, WsGateway, WsGatewayError};
 pub use session::{ClientSession, GatewayPolicy, SessionError};
