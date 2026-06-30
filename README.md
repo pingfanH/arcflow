@@ -23,6 +23,8 @@ crates/
   wave/          Safe wave plans and protocol conversion.
 
 docs/
+  architecture.md
+                 Rust-first, Tauri 2, plugin, BLE, script, and WS design.
   agents/        Agent setup notes.
   external-control/
                  WebSocket control protocol.
@@ -41,3 +43,5 @@ Run the desktop frontend build with:
 pnpm install
 pnpm check:frontend
 ```
+
+See `docs/architecture.md` for the current system architecture.
