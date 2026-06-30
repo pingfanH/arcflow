@@ -1,11 +1,33 @@
 //! Device sessions built over BLE transport Adapters.
 
-use arcflow_protocol::coyote::v3::StrengthModes;
+use arcflow_protocol::coyote::v3::{B1Notification, StrengthModes};
 use arcflow_wave::CoyoteV3Window;
 
 use crate::{
-    BleCharacteristic, BleTransport, CoreError, CoyoteV3CommandBuilder, DeviceId, SafetyLimits,
+    BleCharacteristic, BleNotification, BleTransport, CoreError, CoyoteV3CommandBuilder, DeviceId,
+    SafetyLimits,
 };
+
+/// Coyote V3 strength status parsed from a notify message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoyoteV3StrengthStatus {
+    /// Returned B1 sequence number.
+    pub sequence: u8,
+    /// Actual channel A strength.
+    pub a_strength: u8,
+    /// Actual channel B strength.
+    pub b_strength: u8,
+}
+
+impl From<B1Notification> for CoyoteV3StrengthStatus {
+    fn from(notification: B1Notification) -> Self {
+        Self {
+            sequence: notification.sequence(),
+            a_strength: notification.a_strength(),
+            b_strength: notification.b_strength(),
+        }
+    }
+}
 
 /// Runtime session for one connected device.
 #[derive(Debug)]
@@ -69,6 +91,20 @@ where
 
         self.transport.write(write).await
     }
+
+    /// Parses a Coyote V3 notify payload into channel strength status.
+    pub fn parse_coyote_v3_notification(
+        &self,
+        notification: &BleNotification,
+    ) -> Result<Option<CoyoteV3StrengthStatus>, CoreError> {
+        if notification.characteristic != BleCharacteristic::CoyoteV3Notify {
+            return Ok(None);
+        }
+
+        Ok(Some(
+            B1Notification::from_bytes(&notification.payload)?.into(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -80,7 +116,7 @@ mod tests {
     use async_trait::async_trait;
 
     use super::*;
-    use crate::{BleWrite, SafetyLimits};
+    use crate::{BleNotification, BleWrite, SafetyLimits};
 
     #[derive(Debug, Default)]
     struct FakeTransport {
@@ -165,5 +201,49 @@ mod tests {
         assert_eq!(writes[0].payload[1], 0x2F);
         assert_eq!(writes[0].payload[11], 0x65);
         assert_eq!(writes[0].payload[19], 0x65);
+    }
+
+    #[test]
+    fn parses_coyote_v3_strength_notification() {
+        let session = DeviceSession::new(
+            DeviceId::new("coyote-v3"),
+            FakeTransport::default(),
+            SafetyLimits::conservative(),
+        );
+
+        let status = session
+            .parse_coyote_v3_notification(&BleNotification {
+                characteristic: BleCharacteristic::CoyoteV3Notify,
+                payload: vec![0xB1, 0x01, 0x19, 0x05],
+            })
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            status,
+            CoyoteV3StrengthStatus {
+                sequence: 1,
+                a_strength: 25,
+                b_strength: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn ignores_non_coyote_v3_notification() {
+        let session = DeviceSession::new(
+            DeviceId::new("coyote-v3"),
+            FakeTransport::default(),
+            SafetyLimits::conservative(),
+        );
+
+        let status = session
+            .parse_coyote_v3_notification(&BleNotification {
+                characteristic: BleCharacteristic::CoyoteBattery,
+                payload: vec![100],
+            })
+            .unwrap();
+
+        assert_eq!(status, None);
     }
 }

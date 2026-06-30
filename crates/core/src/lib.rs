@@ -38,4 +38,4 @@ pub use runtime::{
     NoopDeviceOutputController,
 };
 pub use safety::SafetyLimits;
-pub use session::DeviceSession;
+pub use session::{CoyoteV3StrengthStatus, DeviceSession};
