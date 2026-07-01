@@ -72,6 +72,11 @@ Clients granted `events.subscribe` receive pushed WebSocket event envelopes for
 runtime events. Polling through `runtime.events` remains available for clients
 that only need snapshots.
 
+Preview playback uses the same Rust-owned backend session as the shared
+desktop/mobile UI. External software does not stream Bluetooth frames directly:
+it starts or stops a Core preview session through the bridge, and Core continues
+to own sequence allocation, safety limits, and BLE writes.
+
 ## JSON-RPC
 
 After hello, requests use JSON-RPC 2.0 envelopes:
@@ -121,6 +126,55 @@ Required capability: `wave.control`
 }
 ```
 
+### `wave.previewStatus`
+
+Required capability: `device.read`
+
+Returns whether the Rust-owned preview playback session is running.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "wave.previewStatus"
+}
+```
+
+### `wave.startPreview`
+
+Required capability: `wave.control`
+
+Starts repeating conservative Coyote V3 preview windows for an active output
+device. Activate the device with `device.activateOutput` before starting
+preview playback.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "wave.startPreview",
+  "params": {
+    "deviceId": "coyote-v3",
+    "channelAStrength": 12,
+    "channelBStrength": 0
+  }
+}
+```
+
+### `wave.stopPreview`
+
+Required capability: `wave.control`
+
+Stops the preview session and sends a stop-output command through Rust Core.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "wave.stopPreview"
+}
+```
+
 ### `device.activateOutput`
 
 Required capability: `wave.control`
@@ -130,7 +184,7 @@ Marks a device as eligible for wave output writes.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 3,
+  "id": 6,
   "method": "device.activateOutput",
   "params": {
     "deviceId": "coyote-v3"
@@ -149,7 +203,7 @@ Removes a device from wave output writes.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 4,
+  "id": 7,
   "method": "device.deactivateOutput",
   "params": {
     "deviceId": "coyote-v3"
@@ -169,7 +223,7 @@ four points or `null`/omitted to disable that channel.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 5,
+  "id": 8,
   "method": "wave.submitWindow",
   "params": {
     "deviceId": "coyote-v3",
@@ -201,7 +255,7 @@ Required capability: `script.run`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 6,
+  "id": 9,
   "method": "script.run",
   "params": {
     "scriptId": "script.demo"
@@ -216,7 +270,7 @@ Required capability: `script.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 7,
+  "id": 10,
   "method": "script.list"
 }
 ```
@@ -230,7 +284,7 @@ The document is validated by the Rust script compiler before it is stored.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 8,
+  "id": 11,
   "method": "script.upsert",
   "params": {
     "scriptId": "script.demo",
@@ -246,7 +300,7 @@ Required capability: `script.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 9,
+  "id": 12,
   "method": "script.delete",
   "params": {
     "scriptId": "script.demo"

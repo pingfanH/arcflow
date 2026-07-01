@@ -27,7 +27,7 @@ use arcflow_tauri_platform::{
     TauriBleDiscoveryController, TauriBleOutputEvent, TauriBleOutputSink,
     UnsupportedTauriBleTransportProvider,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use tokio::{
     sync::{broadcast, mpsc, oneshot, Mutex as AsyncMutex},
@@ -90,6 +90,9 @@ struct PluginRuntimeState {
 const RUNTIME_STATUS_METHOD: &str = "runtime.status";
 const RUNTIME_EVENTS_METHOD: &str = "runtime.events";
 const RUNTIME_PLUGINS_METHOD: &str = "runtime.plugins";
+const WAVE_PREVIEW_STATUS_METHOD: &str = "wave.previewStatus";
+const WAVE_PREVIEW_START_METHOD: &str = "wave.startPreview";
+const WAVE_PREVIEW_STOP_METHOD: &str = "wave.stopPreview";
 const RUNTIME_EVENT_LIMIT: usize = 128;
 
 #[derive(Clone)]
@@ -247,6 +250,14 @@ struct PreviewPlaybackStatus {
     channel_a_strength: u8,
     channel_b_strength: u8,
     interval_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartPreviewPlaybackParams {
+    device_id: String,
+    channel_a_strength: u8,
+    channel_b_strength: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -552,18 +563,41 @@ fn start_preview_playback(
     runtime_state: tauri::State<'_, RuntimeState>,
     preview_state: tauri::State<'_, PreviewPlaybackState>,
 ) -> Result<PreviewPlaybackStatus, String> {
+    start_preview_playback_session(
+        &state.core,
+        &runtime_state,
+        &preview_state,
+        StartPreviewPlaybackParams {
+            device_id,
+            channel_a_strength,
+            channel_b_strength,
+        },
+    )
+}
+
+#[tauri::command]
+fn stop_preview_playback(
+    state: tauri::State<'_, CoreState>,
+    runtime_state: tauri::State<'_, RuntimeState>,
+    preview_state: tauri::State<'_, PreviewPlaybackState>,
+) -> Result<PreviewPlaybackStatus, String> {
+    stop_preview_playback_session(&state.core, &runtime_state, &preview_state)
+}
+
+fn start_preview_playback_session(
+    core: &ArcFlowCore,
+    runtime_state: &RuntimeState,
+    preview_state: &PreviewPlaybackState,
+    params: StartPreviewPlaybackParams,
+) -> Result<PreviewPlaybackStatus, String> {
     let session = CoyoteV3PreviewSession::new(
-        DeviceId::new(device_id),
-        channel_a_strength,
-        channel_b_strength,
+        DeviceId::new(params.device_id),
+        params.channel_a_strength,
+        params.channel_b_strength,
     )
     .map_err(|error| error.to_string())?;
 
-    if !state
-        .core
-        .active_output_devices()
-        .contains(session.device_id())
-    {
+    if !core.active_output_devices().contains(session.device_id()) {
         return Err(format!(
             "device `{}` is not connected",
             session.device_id().as_str()
@@ -604,28 +638,24 @@ fn start_preview_playback(
     spawn_preview_playback_loop(
         id,
         session,
-        state.core.clone(),
-        runtime_state.inner().clone(),
+        core.clone(),
+        runtime_state.clone(),
         preview_state.inner.clone(),
         stop_receiver,
     );
 
-    Ok(preview_playback_status_from_state(&preview_state))
+    Ok(preview_playback_status_from_state(preview_state))
 }
 
-#[tauri::command]
-fn stop_preview_playback(
-    state: tauri::State<'_, CoreState>,
-    runtime_state: tauri::State<'_, RuntimeState>,
-    preview_state: tauri::State<'_, PreviewPlaybackState>,
+fn stop_preview_playback_session(
+    core: &ArcFlowCore,
+    runtime_state: &RuntimeState,
+    preview_state: &PreviewPlaybackState,
 ) -> Result<PreviewPlaybackStatus, String> {
-    cancel_preview_playback(&preview_state, &runtime_state.events);
-    state
-        .core
-        .stop_all_output()
-        .map_err(|error| error.to_string())?;
+    cancel_preview_playback(preview_state, &runtime_state.events);
+    core.stop_all_output().map_err(|error| error.to_string())?;
 
-    Ok(preview_playback_status_from_state(&preview_state))
+    Ok(preview_playback_status_from_state(preview_state))
 }
 
 #[tauri::command]
@@ -729,6 +759,7 @@ async fn start_external_control(
     storage_state: tauri::State<'_, StorageState>,
     runtime_state: tauri::State<'_, RuntimeState>,
     plugin_runtime_state: tauri::State<'_, PluginRuntimeState>,
+    preview_state: tauri::State<'_, PreviewPlaybackState>,
 ) -> Result<ExternalControlStatus, String> {
     {
         let guard = state
@@ -755,6 +786,7 @@ async fn start_external_control(
                 Arc::clone(&storage_state.storage),
                 runtime,
                 plugin_runtime_state.inner().clone(),
+                preview_state.inner().clone(),
             ),
             event_sender,
         )
@@ -854,12 +886,14 @@ fn external_request_handler(
     storage: Arc<Mutex<Storage>>,
     runtime: RuntimeState,
     plugin_runtime: PluginRuntimeState,
+    preview_state: PreviewPlaybackState,
 ) -> WsRequestHandler {
     Arc::new(move |session: ClientSession, request: JsonRpcRequest| {
         let core = core.clone();
         let storage = Arc::clone(&storage);
         let runtime = runtime.clone();
         let plugin_runtime = plugin_runtime.clone();
+        let preview_state = preview_state.clone();
 
         Box::pin(async move {
             let id = request.id.clone();
@@ -905,6 +939,21 @@ fn external_request_handler(
                 };
             }
 
+            if is_preview_playback_external_request(&request) {
+                let response = execute_preview_playback_external_request(
+                    &session,
+                    &request,
+                    &core,
+                    &runtime,
+                    &preview_state,
+                );
+
+                return match response {
+                    Ok(result) => JsonRpcResponse::ok(id, result),
+                    Err(error) => JsonRpcResponse::error(id, error),
+                };
+            }
+
             if request.method == RUNTIME_STATUS_METHOD {
                 let response =
                     execute_runtime_status_external_request(&session, &runtime, &plugin_runtime)
@@ -940,6 +989,95 @@ fn external_request_handler(
                 Err(error) => JsonRpcResponse::error(id, RpcError::new(-32000, error.to_string())),
             }
         })
+    })
+}
+
+fn is_preview_playback_external_request(request: &JsonRpcRequest) -> bool {
+    matches!(
+        request.method.as_str(),
+        WAVE_PREVIEW_STATUS_METHOD | WAVE_PREVIEW_START_METHOD | WAVE_PREVIEW_STOP_METHOD
+    )
+}
+
+fn execute_preview_playback_external_request(
+    session: &ClientSession,
+    request: &JsonRpcRequest,
+    core: &ArcFlowCore,
+    runtime: &RuntimeState,
+    preview_state: &PreviewPlaybackState,
+) -> Result<serde_json::Value, RpcError> {
+    match request.method.as_str() {
+        WAVE_PREVIEW_STATUS_METHOD => {
+            authorize_external_capability(
+                session,
+                request.method.as_str(),
+                Capability::DeviceRead,
+            )?;
+            serde_json::to_value(preview_playback_status_from_state(preview_state))
+                .map_err(|error| RpcError::new(-32000, error.to_string()))
+        }
+        WAVE_PREVIEW_START_METHOD => {
+            authorize_external_capability(
+                session,
+                request.method.as_str(),
+                Capability::WaveControl,
+            )?;
+            let params: StartPreviewPlaybackParams = read_external_params(request)?;
+            start_preview_playback_session(core, runtime, preview_state, params)
+                .and_then(|status| serde_json::to_value(status).map_err(|error| error.to_string()))
+                .map_err(|error| RpcError::new(-32000, error))
+        }
+        WAVE_PREVIEW_STOP_METHOD => {
+            authorize_external_capability(
+                session,
+                request.method.as_str(),
+                Capability::WaveControl,
+            )?;
+            stop_preview_playback_session(core, runtime, preview_state)
+                .and_then(|status| serde_json::to_value(status).map_err(|error| error.to_string()))
+                .map_err(|error| RpcError::new(-32000, error))
+        }
+        method => Err(RpcError::new(
+            -32000,
+            format!("unsupported preview playback method `{method}`"),
+        )),
+    }
+}
+
+fn authorize_external_capability(
+    session: &ClientSession,
+    method: &str,
+    capability: Capability,
+) -> Result<(), RpcError> {
+    if session.has_capability(capability) {
+        return Ok(());
+    }
+
+    Err(RpcError::new(
+        -32000,
+        format!(
+            "session `{}` is missing required capability `{}` for `{}`",
+            session.client_name(),
+            capability.as_str(),
+            method
+        ),
+    ))
+}
+
+fn read_external_params<T>(request: &JsonRpcRequest) -> Result<T, RpcError>
+where
+    T: for<'de> Deserialize<'de>,
+{
+    let params = request
+        .params
+        .clone()
+        .ok_or_else(|| RpcError::new(-32000, format!("missing params for `{}`", request.method)))?;
+
+    serde_json::from_value(params).map_err(|error| {
+        RpcError::new(
+            -32000,
+            format!("invalid params for `{}`: {error}", request.method),
+        )
     })
 }
 
@@ -1537,6 +1675,27 @@ mod tests {
         }
     }
 
+    fn runtime_state_with_core() -> (RuntimeState, ArcFlowCore) {
+        let output_sink = TauriBleOutputSink::spawn(Arc::new(UnsupportedTauriBleTransportProvider));
+        let output_controller = Arc::new(CoyoteV3OutputController::new(
+            SafetyLimits::conservative(),
+            output_sink.clone(),
+        ));
+        let core_output_controller: Arc<dyn DeviceOutputController> = output_controller.clone();
+        let core = ArcFlowCore::with_output_controller(
+            SafetyLimits::conservative(),
+            core_output_controller,
+        );
+        let runtime = RuntimeState {
+            output_controller,
+            output_sink,
+            events: RuntimeEventLog::default(),
+            preview_sequences: Arc::new(Mutex::new(CoyoteV3SequenceAllocator::default())),
+        };
+
+        (runtime, core)
+    }
+
     #[tokio::test]
     async fn runtime_plugins_from_state_lists_loaded_plugins() {
         let state = empty_plugin_runtime_state();
@@ -1590,6 +1749,102 @@ mod tests {
         assert_eq!(error.code, -32000);
         assert!(error.message.contains("plugin.manage"));
         assert!(error.message.contains(RUNTIME_PLUGINS_METHOD));
+    }
+
+    #[tokio::test]
+    async fn preview_status_external_request_requires_device_read() {
+        let (runtime, core) = runtime_state_with_core();
+        let preview_state = PreviewPlaybackState::default();
+        let session = session_with(vec![Capability::DeviceRead]);
+        let request = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(20),
+            WAVE_PREVIEW_STATUS_METHOD,
+            None,
+        );
+
+        let result = execute_preview_playback_external_request(
+            &session,
+            &request,
+            &core,
+            &runtime,
+            &preview_state,
+        )
+        .unwrap();
+
+        assert_eq!(result["running"], false);
+        assert_eq!(result["deviceId"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn preview_start_external_request_requires_wave_control() {
+        let (runtime, core) = runtime_state_with_core();
+        let preview_state = PreviewPlaybackState::default();
+        let session = session_with(vec![Capability::DeviceRead]);
+        let request = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(21),
+            WAVE_PREVIEW_START_METHOD,
+            Some(serde_json::json!({
+                "deviceId": "coyote-v3",
+                "channelAStrength": 12,
+                "channelBStrength": 0
+            })),
+        );
+
+        let error = execute_preview_playback_external_request(
+            &session,
+            &request,
+            &core,
+            &runtime,
+            &preview_state,
+        )
+        .unwrap_err();
+
+        assert!(error.message.contains("wave.control"));
+        assert!(error.message.contains(WAVE_PREVIEW_START_METHOD));
+    }
+
+    #[tokio::test]
+    async fn preview_external_requests_start_and_stop_backend_session() {
+        let (runtime, core) = runtime_state_with_core();
+        let preview_state = PreviewPlaybackState::default();
+        let session = session_with(vec![Capability::WaveControl]);
+        core.attach_output_device(DeviceId::new("coyote-v3"))
+            .unwrap();
+        let start = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(22),
+            WAVE_PREVIEW_START_METHOD,
+            Some(serde_json::json!({
+                "deviceId": "coyote-v3",
+                "channelAStrength": 12,
+                "channelBStrength": 0
+            })),
+        );
+        let stop = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(23),
+            WAVE_PREVIEW_STOP_METHOD,
+            None,
+        );
+
+        let started = execute_preview_playback_external_request(
+            &session,
+            &start,
+            &core,
+            &runtime,
+            &preview_state,
+        )
+        .unwrap();
+        let stopped = execute_preview_playback_external_request(
+            &session,
+            &stop,
+            &core,
+            &runtime,
+            &preview_state,
+        )
+        .unwrap();
+
+        assert_eq!(started["running"], true);
+        assert_eq!(started["deviceId"], "coyote-v3");
+        assert_eq!(stopped["running"], false);
     }
 
     #[tokio::test]
