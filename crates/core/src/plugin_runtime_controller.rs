@@ -1,18 +1,22 @@
 //! Plugin runtime lifecycle controller.
 
 use core::fmt;
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
 
 use arcflow_plugin_runtime::{
     JavaScriptValidationRuntimeAdapter, PluginHost, PluginHostError, PluginInvocation,
-    PluginOutput, PluginRegistry, RecordedPlugin, RecordingRuntimeSnapshot, RuntimeRouter,
-    SandboxedRuntime, WasmValidationRuntimeAdapter,
+    PluginManifest, PluginOutput, PluginRegistry, RecordedPlugin, RecordingRuntimeSnapshot,
+    RuntimeRouter, SandboxedRuntime, WasmValidationRuntimeAdapter,
 };
+use arcflow_storage::Storage;
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::{CoreError, PluginHookInvoker};
+use crate::{CoreError, DeviceOutputController, PluginApi, PluginHookInvoker};
 
 /// Runtime router used by the current plugin runtime.
 pub type ArcFlowPluginRuntimeRouter =
@@ -148,6 +152,28 @@ impl RecordingPluginRuntimeController {
             .invoke(plugin_id, PluginInvocation::new(hook, payload))
             .await?)
     }
+
+    /// Invokes one hook and returns the manifest that owns its output.
+    pub async fn invoke_hook_with_manifest(
+        &self,
+        plugin_id: &str,
+        hook: &str,
+        payload: Value,
+    ) -> Result<(PluginManifest, PluginOutput), PluginRuntimeControllerError> {
+        let manifest = self
+            .host
+            .registry()
+            .get(plugin_id)
+            .map_err(PluginHostError::from)?
+            .manifest()
+            .clone();
+        let output = self
+            .host
+            .invoke(plugin_id, PluginInvocation::new(hook, payload))
+            .await?;
+
+        Ok((manifest, output))
+    }
 }
 
 impl Default for RecordingPluginRuntimeController {
@@ -216,19 +242,37 @@ impl From<PluginHostError> for PluginRuntimeControllerError {
 #[derive(Clone)]
 pub struct RecordingPluginRuntimeHookInvoker {
     controller: Arc<AsyncMutex<RecordingPluginRuntimeController>>,
+    action_handler: Option<PluginOutputActionHandler>,
 }
 
 impl RecordingPluginRuntimeHookInvoker {
     /// Constructs a hook invoker over the shared recording runtime controller.
     #[must_use]
     pub fn new(controller: Arc<AsyncMutex<RecordingPluginRuntimeController>>) -> Self {
-        Self { controller }
+        Self {
+            controller,
+            action_handler: None,
+        }
+    }
+
+    /// Constructs a hook invoker that routes plugin output actions through the Plugin API.
+    #[must_use]
+    pub fn with_plugin_api(
+        controller: Arc<AsyncMutex<RecordingPluginRuntimeController>>,
+        storage: Arc<Mutex<Storage>>,
+        output_controller: Arc<dyn DeviceOutputController>,
+    ) -> Self {
+        Self {
+            controller,
+            action_handler: Some(PluginOutputActionHandler::new(storage, output_controller)),
+        }
     }
 }
 
 impl fmt::Debug for RecordingPluginRuntimeHookInvoker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RecordingPluginRuntimeHookInvoker")
+            .field("handles_plugin_api_actions", &self.action_handler.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -241,13 +285,17 @@ impl PluginHookInvoker for RecordingPluginRuntimeHookInvoker {
         hook: &str,
         payload: &Value,
     ) -> Result<(), CoreError> {
-        let output = self
+        let (manifest, output) = self
             .controller
             .lock()
             .await
-            .invoke_hook(plugin_id, hook, payload.clone())
+            .invoke_hook_with_manifest(plugin_id, hook, payload.clone())
             .await
             .map_err(|error| CoreError::Script(error.to_string()))?;
+
+        if let Some(action_handler) = &self.action_handler {
+            return action_handler.handle(&manifest, output);
+        }
 
         if output.actions.is_empty() {
             Ok(())
@@ -256,6 +304,46 @@ impl PluginHookInvoker for RecordingPluginRuntimeHookInvoker {
                 "plugin hook `{hook}` for plugin `{plugin_id}` returned host actions, but script hook output handling is not attached"
             )))
         }
+    }
+}
+
+#[derive(Clone)]
+struct PluginOutputActionHandler {
+    storage: Arc<Mutex<Storage>>,
+    output_controller: Arc<dyn DeviceOutputController>,
+}
+
+impl PluginOutputActionHandler {
+    fn new(
+        storage: Arc<Mutex<Storage>>,
+        output_controller: Arc<dyn DeviceOutputController>,
+    ) -> Self {
+        Self {
+            storage,
+            output_controller,
+        }
+    }
+
+    fn handle(&self, manifest: &PluginManifest, output: PluginOutput) -> Result<(), CoreError> {
+        if output.actions.is_empty() {
+            return Ok(());
+        }
+
+        let storage = self
+            .storage
+            .lock()
+            .expect("plugin API storage mutex poisoned");
+        let api = PluginApi::with_output_controller(&storage, Arc::clone(&self.output_controller));
+        api.handle_output(manifest, output)
+            .map(|_| ())
+            .map_err(|error| CoreError::Script(error.to_string()))
+    }
+}
+
+impl fmt::Debug for PluginOutputActionHandler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PluginOutputActionHandler")
+            .finish_non_exhaustive()
     }
 }
 
@@ -274,12 +362,36 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use arcflow_plugin_runtime::{Capability, PluginManifest, RuntimeKind};
+    use arcflow_plugin_runtime::{Capability, PluginAction, PluginManifest, RuntimeKind};
+    use arcflow_storage::Storage;
     use serde_json::json;
 
     use super::*;
 
     const MINIMAL_WASM_MODULE: &[u8] = b"\0asm\x01\0\0\0";
+
+    #[derive(Debug)]
+    struct FakeOutputController {
+        stop_count: Mutex<usize>,
+    }
+
+    impl DeviceOutputController for FakeOutputController {
+        fn submit_coyote_v3_window(
+            &self,
+            _request: crate::CoyoteV3OutputRequest,
+        ) -> Result<crate::SubmitOutputResult, crate::CoreError> {
+            Err(crate::CoreError::Transport(
+                "fake output controller does not submit windows".to_owned(),
+            ))
+        }
+
+        fn stop_all_output(&self) -> Result<crate::StopOutputResult, crate::CoreError> {
+            *self.stop_count.lock().unwrap() += 1;
+            Ok(crate::StopOutputResult::new(vec![crate::DeviceId::new(
+                "coyote-v3",
+            )]))
+        }
+    }
 
     fn manifest(id: &str, runtime: RuntimeKind) -> PluginManifest {
         PluginManifest {
@@ -294,6 +406,44 @@ mod tests {
             api_version: "1".to_owned(),
             capabilities: vec![Capability::DeviceRead],
         }
+    }
+
+    fn manifest_with_capabilities(
+        id: &str,
+        runtime: RuntimeKind,
+        capabilities: Vec<Capability>,
+    ) -> PluginManifest {
+        PluginManifest {
+            capabilities,
+            ..manifest(id, runtime)
+        }
+    }
+
+    #[test]
+    fn plugin_output_action_handler_routes_actions_through_plugin_api() {
+        let storage = Arc::new(Mutex::new(Storage::in_memory().unwrap()));
+        let output_controller = Arc::new(FakeOutputController {
+            stop_count: Mutex::new(0),
+        });
+        let output: Arc<dyn DeviceOutputController> = output_controller.clone();
+        let handler = PluginOutputActionHandler::new(storage, output);
+        let manifest = manifest_with_capabilities(
+            "plugin.wasm",
+            RuntimeKind::Wasm,
+            vec![Capability::WaveControl],
+        );
+
+        handler
+            .handle(
+                &manifest,
+                PluginOutput::new(vec![PluginAction::new(
+                    "wave.stop",
+                    json!({ "deviceId": "coyote-v3" }),
+                )]),
+            )
+            .unwrap();
+
+        assert_eq!(*output_controller.stop_count.lock().unwrap(), 1);
     }
 
     #[tokio::test]

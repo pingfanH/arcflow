@@ -125,4 +125,7 @@ the compiled automation, and a background worker executes steps through an
 injected Core action executor. This keeps IPC responsive and gives future
 device/plugin actions a replaceable boundary. Plugin hook automation steps
 invoke enabled plugins through the same sandboxed runtime host used by UI and
-plugin bridge management.
+plugin bridge management. In the shared Tauri runtime, plugin hook outputs are
+routed through Core's Plugin API, so declared host actions such as
+`storage.private.*` and `wave.stop` still go through Rust-owned storage,
+capability checks, and output controllers.

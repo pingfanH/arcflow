@@ -1557,9 +1557,11 @@ where
                 output_sink.clone(),
             ));
             let core_output_controller: Arc<dyn DeviceOutputController> = output_controller.clone();
-            let plugin_hook_invoker = Arc::new(RecordingPluginRuntimeHookInvoker::new(Arc::clone(
-                &plugin_runtime_controller,
-            )));
+            let plugin_hook_invoker = Arc::new(RecordingPluginRuntimeHookInvoker::with_plugin_api(
+                Arc::clone(&plugin_runtime_controller),
+                Arc::clone(&storage),
+                Arc::clone(&core_output_controller),
+            ));
             let script_actions = CoreScriptActionExecutor::with_plugin_hooks(
                 Arc::clone(&discovery_controller),
                 Arc::clone(&core_output_controller),
