@@ -215,7 +215,8 @@ Required capability: `script.manage`
 
 Required capability: `device.read`
 
-Returns active output device ids and BLE output worker counters.
+Returns active output device ids, BLE output worker counters, and the number of
+plugins currently loaded into the sandboxed runtime.
 
 ```json
 {

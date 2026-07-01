@@ -160,6 +160,7 @@ struct RuntimeStatus {
     ble_output_queued: u64,
     ble_output_written: u64,
     ble_output_failed: u64,
+    loaded_plugin_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -214,8 +215,13 @@ fn storage_status(state: tauri::State<'_, StorageState>) -> Result<StorageStatus
 }
 
 #[tauri::command]
-fn runtime_status(state: tauri::State<'_, RuntimeState>) -> RuntimeStatus {
-    runtime_status_from_state(&state)
+async fn runtime_status(
+    state: tauri::State<'_, RuntimeState>,
+    plugin_runtime: tauri::State<'_, PluginRuntimeState>,
+) -> Result<RuntimeStatus, String> {
+    let loaded_plugin_count = loaded_plugin_count(plugin_runtime.inner()).await;
+
+    Ok(runtime_status_from_state(&state, loaded_plugin_count))
 }
 
 #[tauri::command]
@@ -534,7 +540,9 @@ fn external_request_handler(
             }
 
             if request.method == RUNTIME_STATUS_METHOD {
-                let response = execute_runtime_status_external_request(&session, &runtime);
+                let response =
+                    execute_runtime_status_external_request(&session, &runtime, &plugin_runtime)
+                        .await;
 
                 return match response {
                     Ok(result) => JsonRpcResponse::ok(id, result),
@@ -574,9 +582,10 @@ fn execute_runtime_events_external_request(
         .map_err(|error| RpcError::new(-32000, error.to_string()))
 }
 
-fn execute_runtime_status_external_request(
+async fn execute_runtime_status_external_request(
     session: &ClientSession,
     runtime: &RuntimeState,
+    plugin_runtime: &PluginRuntimeState,
 ) -> Result<serde_json::Value, RpcError> {
     if !session.has_capability(Capability::DeviceRead) {
         return Err(runtime_read_capability_error(
@@ -585,7 +594,9 @@ fn execute_runtime_status_external_request(
         ));
     }
 
-    serde_json::to_value(runtime_status_from_state(runtime))
+    let loaded_plugin_count = loaded_plugin_count(plugin_runtime).await;
+
+    serde_json::to_value(runtime_status_from_state(runtime, loaded_plugin_count))
         .map_err(|error| RpcError::new(-32000, error.to_string()))
 }
 
@@ -601,7 +612,7 @@ fn runtime_read_capability_error(session: &ClientSession, method: &str) -> RpcEr
     )
 }
 
-fn runtime_status_from_state(runtime: &RuntimeState) -> RuntimeStatus {
+fn runtime_status_from_state(runtime: &RuntimeState, loaded_plugin_count: usize) -> RuntimeStatus {
     let stats = runtime.output_sink.stats();
 
     RuntimeStatus {
@@ -614,7 +625,17 @@ fn runtime_status_from_state(runtime: &RuntimeState) -> RuntimeStatus {
         ble_output_queued: stats.queued,
         ble_output_written: stats.written,
         ble_output_failed: stats.failed,
+        loaded_plugin_count,
     }
+}
+
+async fn loaded_plugin_count(plugin_runtime: &PluginRuntimeState) -> usize {
+    plugin_runtime
+        .controller
+        .lock()
+        .await
+        .loaded_plugins()
+        .len()
 }
 
 fn runtime_events_from_state(runtime: &RuntimeState) -> RuntimeEventsResponse {

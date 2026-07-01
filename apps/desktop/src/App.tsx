@@ -65,6 +65,7 @@ type RuntimeStatus = {
   bleOutputQueued: number;
   bleOutputWritten: number;
   bleOutputFailed: number;
+  loadedPluginCount: number;
 };
 
 type RuntimeEventRecord = {
@@ -137,6 +138,7 @@ const fallbackRuntimeStatus: RuntimeStatus = {
   bleOutputQueued: 0,
   bleOutputWritten: 0,
   bleOutputFailed: 0,
+  loadedPluginCount: 0,
 };
 
 const emptyRuntimeEvents: RuntimeEventsResponse = {
@@ -524,6 +526,12 @@ function App() {
                   runtimeStatus?.bleOutputQueued ?? 0
                 }/${runtimeStatus?.bleOutputWritten ?? 0}/${runtimeStatus?.bleOutputFailed ?? 0}`}
                 tone="sky"
+              />
+              <StatusPanel
+                icon={Puzzle}
+                label="Loaded plugins"
+                value={`${runtimeStatus?.loadedPluginCount ?? 0} sandboxed`}
+                tone="emerald"
               />
               <RuntimeEventsPanel
                 events={runtimeEvents ?? emptyRuntimeEvents}
