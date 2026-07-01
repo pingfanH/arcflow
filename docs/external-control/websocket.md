@@ -300,3 +300,21 @@ Required capability: `plugin.manage`
   }
 }
 ```
+
+### `plugin.delete`
+
+Required capability: `plugin.manage`
+
+Deletes a persisted plugin and unloads it from the sandboxed runtime if it was
+enabled.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 13,
+  "method": "plugin.delete",
+  "params": {
+    "pluginId": "dev.arcflow.example"
+  }
+}
+```

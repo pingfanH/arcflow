@@ -80,6 +80,13 @@ impl PluginRegistry {
         Ok(())
     }
 
+    /// Uninstalls a plugin record.
+    pub fn uninstall(&mut self, plugin_id: &str) -> Result<PluginRecord, PluginRegistryError> {
+        self.records
+            .remove(plugin_id)
+            .ok_or_else(|| PluginRegistryError::NotInstalled(plugin_id.to_owned()))
+    }
+
     /// Returns an installed plugin record.
     pub fn get(&self, plugin_id: &str) -> Result<&PluginRecord, PluginRegistryError> {
         self.records
@@ -176,5 +183,19 @@ mod tests {
             error,
             PluginRegistryError::AlreadyInstalled("com.example.a".to_owned())
         );
+    }
+
+    #[test]
+    fn uninstalls_plugins() {
+        let mut registry = PluginRegistry::new();
+
+        registry.install(manifest("com.example.a")).unwrap();
+        let removed = registry.uninstall("com.example.a").unwrap();
+
+        assert_eq!(removed.manifest().id, "com.example.a");
+        assert!(matches!(
+            registry.get("com.example.a"),
+            Err(PluginRegistryError::NotInstalled(_))
+        ));
     }
 }

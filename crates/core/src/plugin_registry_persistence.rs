@@ -138,6 +138,21 @@ impl<'a> PluginRegistryPersistence<'a> {
         self.list_entries()
     }
 
+    /// Deletes a plugin from the persisted registry.
+    pub fn delete(
+        &self,
+        plugin_id: &str,
+    ) -> Result<Vec<PluginRegistryEntry>, PluginRegistryPersistenceError> {
+        let mut registry = self.load()?;
+
+        registry
+            .uninstall(plugin_id)
+            .map_err(|error| PluginRegistryPersistenceError::Registry(error.to_string()))?;
+        self.save(&registry)?;
+
+        self.list_entries()
+    }
+
     /// Saves the current plugin-runtime registry as the persisted registry.
     pub fn save(&self, registry: &PluginRegistry) -> Result<(), PluginRegistryPersistenceError> {
         let store = self.storage.plugin_registry();
@@ -395,5 +410,18 @@ mod tests {
             .get("plugin.a")
             .unwrap()
             .enabled());
+    }
+
+    #[test]
+    fn deletes_plugin_manifest() {
+        let storage = Storage::in_memory().unwrap();
+        let persistence = PluginRegistryPersistence::new(&storage);
+        let manifest_json = serde_json::to_string(&manifest("plugin.a")).unwrap();
+
+        persistence.install_manifest_json(&manifest_json).unwrap();
+        let entries = persistence.delete("plugin.a").unwrap();
+
+        assert!(entries.is_empty());
+        assert!(storage.plugin_registry().get("plugin.a").unwrap().is_none());
     }
 }

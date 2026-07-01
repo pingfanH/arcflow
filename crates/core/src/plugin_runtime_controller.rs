@@ -1,7 +1,7 @@
 //! Plugin runtime lifecycle controller.
 
 use core::fmt;
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use arcflow_plugin_runtime::{
     PluginHost, PluginHostError, PluginInvocation, PluginOutput, PluginRegistry, RecordedPlugin,
@@ -48,6 +48,35 @@ impl RecordingPluginRuntimeController {
         registry: &PluginRegistry,
     ) -> Result<PluginRuntimeSyncReport, PluginRuntimeControllerError> {
         let mut report = PluginRuntimeSyncReport::default();
+        let target_plugin_ids = registry
+            .list()
+            .into_iter()
+            .map(|record| record.manifest().id.clone())
+            .collect::<BTreeSet<_>>();
+        let current_plugin_ids = self
+            .host
+            .registry()
+            .list()
+            .into_iter()
+            .map(|record| record.manifest().id.clone())
+            .collect::<Vec<_>>();
+
+        for plugin_id in current_plugin_ids {
+            if !target_plugin_ids.contains(&plugin_id) {
+                let was_enabled = self
+                    .host
+                    .registry()
+                    .get(&plugin_id)
+                    .map_err(PluginHostError::from)?
+                    .enabled();
+
+                self.host.uninstall(&plugin_id).await?;
+                if was_enabled {
+                    report.unloaded_plugin_ids.push(plugin_id.clone());
+                }
+                report.uninstalled_plugin_ids.push(plugin_id);
+            }
+        }
 
         for record in registry.list() {
             let manifest = record.manifest().clone();
@@ -126,6 +155,8 @@ impl Default for RecordingPluginRuntimeController {
 pub struct PluginRuntimeSyncReport {
     /// Plugins installed into the host registry.
     pub installed_plugin_ids: Vec<String>,
+    /// Plugins removed from the host registry.
+    pub uninstalled_plugin_ids: Vec<String>,
     /// Plugins loaded into a runtime.
     pub loaded_plugin_ids: Vec<String>,
     /// Plugins unloaded from a runtime.
@@ -137,6 +168,7 @@ impl PluginRuntimeSyncReport {
     #[must_use]
     pub fn changed(&self) -> bool {
         !self.installed_plugin_ids.is_empty()
+            || !self.uninstalled_plugin_ids.is_empty()
             || !self.loaded_plugin_ids.is_empty()
             || !self.unloaded_plugin_ids.is_empty()
     }
@@ -310,6 +342,24 @@ mod tests {
         let report = controller.sync_from_registry(&registry).await.unwrap();
 
         assert_eq!(report.unloaded_plugin_ids, vec!["plugin.wasm"]);
+        assert!(controller.loaded_plugins().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sync_uninstalls_removed_plugins() {
+        let mut registry = PluginRegistry::new();
+        registry
+            .install(manifest("plugin.wasm", RuntimeKind::Wasm))
+            .unwrap();
+        registry.enable("plugin.wasm").unwrap();
+        let mut controller = RecordingPluginRuntimeController::new();
+        controller.sync_from_registry(&registry).await.unwrap();
+
+        registry.uninstall("plugin.wasm").unwrap();
+        let report = controller.sync_from_registry(&registry).await.unwrap();
+
+        assert_eq!(report.unloaded_plugin_ids, vec!["plugin.wasm"]);
+        assert_eq!(report.uninstalled_plugin_ids, vec!["plugin.wasm"]);
         assert!(controller.loaded_plugins().is_empty());
     }
 

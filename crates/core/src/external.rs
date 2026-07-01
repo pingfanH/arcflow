@@ -15,6 +15,7 @@ use crate::{
 const PLUGIN_REGISTRY_METHOD: &str = "plugin.registry";
 const PLUGIN_INSTALL_MANIFEST_METHOD: &str = "plugin.installManifest";
 const PLUGIN_SET_ENABLED_METHOD: &str = "plugin.setEnabled";
+const PLUGIN_DELETE_METHOD: &str = "plugin.delete";
 const SCRIPT_LIST_METHOD: &str = "script.list";
 const SCRIPT_UPSERT_METHOD: &str = "script.upsert";
 const SCRIPT_DELETE_METHOD: &str = "script.delete";
@@ -91,7 +92,10 @@ pub fn core_command_from_external_request(
 pub fn is_plugin_registry_external_request(request: &JsonRpcRequest) -> bool {
     matches!(
         request.method.as_str(),
-        PLUGIN_REGISTRY_METHOD | PLUGIN_INSTALL_MANIFEST_METHOD | PLUGIN_SET_ENABLED_METHOD
+        PLUGIN_REGISTRY_METHOD
+            | PLUGIN_INSTALL_MANIFEST_METHOD
+            | PLUGIN_SET_ENABLED_METHOD
+            | PLUGIN_DELETE_METHOD
     )
 }
 
@@ -100,7 +104,7 @@ pub fn is_plugin_registry_external_request(request: &JsonRpcRequest) -> bool {
 pub fn is_plugin_registry_mutation_external_request(request: &JsonRpcRequest) -> bool {
     matches!(
         request.method.as_str(),
-        PLUGIN_INSTALL_MANIFEST_METHOD | PLUGIN_SET_ENABLED_METHOD
+        PLUGIN_INSTALL_MANIFEST_METHOD | PLUGIN_SET_ENABLED_METHOD | PLUGIN_DELETE_METHOD
     )
 }
 
@@ -130,6 +134,10 @@ pub fn execute_plugin_registry_external_request(
         PLUGIN_SET_ENABLED_METHOD => {
             let params: PluginSetEnabledParams = read_params(request)?;
             persistence.set_enabled(&params.plugin_id, params.enabled)
+        }
+        PLUGIN_DELETE_METHOD => {
+            let params: PluginDeleteParams = read_params(request)?;
+            persistence.delete(&params.plugin_id)
         }
         method => {
             return Err(CoreError::InvalidExternalRequest(format!(
@@ -282,6 +290,12 @@ struct PluginInstallManifestParams {
 struct PluginSetEnabledParams {
     plugin_id: String,
     enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginDeleteParams {
+    plugin_id: String,
 }
 
 fn submit_window_command(params: SubmitWindowParams) -> Result<CoreCommand, CoreError> {
@@ -500,6 +514,48 @@ mod tests {
 
         assert!(is_plugin_registry_external_request(&request));
         assert!(is_plugin_registry_mutation_external_request(&request));
+    }
+
+    #[test]
+    fn deletes_plugin_manifest_through_external_request() {
+        let storage = Storage::in_memory().unwrap();
+        let session = GatewayPolicy::new(vec![Capability::PluginManage])
+            .accept(ClientHello {
+                client_name: "Plugin Manager".to_owned(),
+                protocol_version: PROTOCOL_VERSION,
+                requested_capabilities: vec![Capability::PluginManage],
+            })
+            .unwrap();
+        let install = JsonRpcRequest::new(
+            RequestId::Number(8),
+            PLUGIN_INSTALL_MANIFEST_METHOD,
+            Some(json!({
+                "manifestJson": r#"{
+                    "id":"plugin.external",
+                    "name":"External Plugin",
+                    "version":"1.0.0",
+                    "runtime":"wasm",
+                    "entry":"dist/plugin.wasm",
+                    "apiVersion":"1",
+                    "capabilities":["device.read"]
+                }"#
+            })),
+        );
+        execute_plugin_registry_external_request(&session, &install, &storage).unwrap();
+        let delete = JsonRpcRequest::new(
+            RequestId::Number(9),
+            PLUGIN_DELETE_METHOD,
+            Some(json!({ "pluginId": "plugin.external" })),
+        );
+
+        let result = execute_plugin_registry_external_request(&session, &delete, &storage).unwrap();
+
+        assert_eq!(result, json!({ "plugins": [] }));
+        assert!(storage
+            .plugin_registry()
+            .get("plugin.external")
+            .unwrap()
+            .is_none());
     }
 
     #[test]

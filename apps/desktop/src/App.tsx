@@ -299,7 +299,11 @@ function App() {
     invoke<PluginRegistryResponse>("install_plugin_manifest", {
       manifestJson: JSON.stringify(starterPluginManifest),
     })
-      .then(setPluginRegistry)
+      .then((result) => {
+        setPluginRegistry(result);
+        refreshRuntimeStatus();
+        refreshRuntimeEvents();
+      })
       .catch(refreshPluginRegistry)
       .finally(() => setPluginBusy(false));
   };
@@ -307,7 +311,23 @@ function App() {
   const setPluginEnabled = (pluginId: string, enabled: boolean) => {
     setPluginBusy(true);
     invoke<PluginRegistryResponse>("set_plugin_enabled", { pluginId, enabled })
-      .then(setPluginRegistry)
+      .then((result) => {
+        setPluginRegistry(result);
+        refreshRuntimeStatus();
+        refreshRuntimeEvents();
+      })
+      .catch(refreshPluginRegistry)
+      .finally(() => setPluginBusy(false));
+  };
+
+  const deletePlugin = (pluginId: string) => {
+    setPluginBusy(true);
+    invoke<PluginRegistryResponse>("delete_plugin", { pluginId })
+      .then((result) => {
+        setPluginRegistry(result);
+        refreshRuntimeStatus();
+        refreshRuntimeEvents();
+      })
       .catch(refreshPluginRegistry)
       .finally(() => setPluginBusy(false));
   };
@@ -500,6 +520,7 @@ function App() {
                 busy={pluginBusy}
                 registry={pluginRegistry ?? emptyPluginRegistry}
                 runtimes={status?.pluginRuntimes ?? ["wasm", "javascript"]}
+                onDelete={deletePlugin}
                 onInstallStarter={installStarterPlugin}
                 onRefresh={refreshPluginRegistry}
                 onSetEnabled={setPluginEnabled}
@@ -708,6 +729,7 @@ type PluginRegistryPanelProps = {
   busy: boolean;
   registry: PluginRegistryResponse;
   runtimes: string[];
+  onDelete: (pluginId: string) => void;
   onInstallStarter: () => void;
   onRefresh: () => void;
   onSetEnabled: (pluginId: string, enabled: boolean) => void;
@@ -717,6 +739,7 @@ function PluginRegistryPanel({
   busy,
   registry,
   runtimes,
+  onDelete,
   onInstallStarter,
   onRefresh,
   onSetEnabled,
@@ -784,6 +807,15 @@ function PluginRegistryPanel({
                   onClick={() => onSetEnabled(plugin.id, !plugin.enabled)}
                 >
                   {plugin.enabled ? <ToggleRight size={17} /> : <ToggleLeft size={17} />}
+                </button>
+                <button
+                  className="grid size-8 place-items-center rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={busy}
+                  title="Delete plugin"
+                  type="button"
+                  onClick={() => onDelete(plugin.id)}
+                >
+                  <Trash2 size={15} />
                 </button>
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5">

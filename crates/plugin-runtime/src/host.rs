@@ -67,6 +67,16 @@ where
         Ok(())
     }
 
+    /// Unloads and uninstalls a plugin.
+    pub async fn uninstall(&mut self, plugin_id: &str) -> Result<(), PluginHostError> {
+        if let Some(handle) = self.handles.remove(plugin_id) {
+            self.adapter.unload(handle).await?;
+        }
+
+        self.registry.uninstall(plugin_id)?;
+        Ok(())
+    }
+
     /// Invokes an enabled plugin.
     pub async fn invoke(
         &self,
@@ -205,5 +215,19 @@ mod tests {
         host.disable("com.example.plugin").await.unwrap();
 
         assert!(!host.registry().get("com.example.plugin").unwrap().enabled());
+    }
+
+    #[tokio::test]
+    async fn uninstalls_and_unloads_plugin() {
+        let mut host = PluginHost::new(FakeRuntime::default());
+        host.install(manifest()).unwrap();
+        host.enable("com.example.plugin").await.unwrap();
+        host.uninstall("com.example.plugin").await.unwrap();
+
+        assert!(matches!(
+            host.registry().get("com.example.plugin"),
+            Err(PluginRegistryError::NotInstalled(_))
+        ));
+        assert!(host.adapter().loaded.lock().unwrap().is_empty());
     }
 }

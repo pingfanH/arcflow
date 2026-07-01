@@ -337,6 +337,25 @@ async fn set_plugin_enabled(
 }
 
 #[tauri::command]
+async fn delete_plugin(
+    plugin_id: String,
+    state: tauri::State<'_, StorageState>,
+    plugin_runtime: tauri::State<'_, PluginRuntimeState>,
+) -> Result<PluginRegistryResponse, String> {
+    let plugins = {
+        let storage = state.storage.lock().expect("storage state mutex poisoned");
+        let persistence = PluginRegistryPersistence::new(&storage);
+        persistence
+            .delete(&plugin_id)
+            .map_err(|error| error.to_string())?
+    };
+
+    sync_plugin_runtime_from_storage(&state.storage, plugin_runtime.inner()).await?;
+
+    Ok(PluginRegistryResponse { plugins })
+}
+
+#[tauri::command]
 fn list_scripts(state: tauri::State<'_, StorageState>) -> Result<ScriptsResponse, String> {
     let storage = state.storage.lock().expect("storage state mutex poisoned");
     let scripts = ScriptDocumentPersistence::new(&storage)
@@ -723,6 +742,13 @@ fn log_plugin_runtime_sync(events: &RuntimeEventLog, report: &PluginRuntimeSyncR
             format!("plugin `{plugin_id}` unloaded from sandboxed runtime"),
         );
     }
+
+    for plugin_id in &report.uninstalled_plugin_ids {
+        events.push(
+            "plugin.uninstalled",
+            format!("plugin `{plugin_id}` removed from runtime host"),
+        );
+    }
 }
 
 fn spawn_plugin_runtime_restore(storage: Arc<Mutex<Storage>>, plugin_runtime: PluginRuntimeState) {
@@ -899,6 +925,7 @@ pub fn run() {
             install_plugin_manifest,
             install_plugin_bundle,
             set_plugin_enabled,
+            delete_plugin,
             list_scripts,
             upsert_script,
             delete_script,
