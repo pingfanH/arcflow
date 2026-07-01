@@ -61,6 +61,8 @@ impl PluginManifest {
             return Err(ManifestError::UnsafeEntryPath);
         }
 
+        validate_runtime_entry(self.runtime, &self.entry)?;
+
         Ok(())
     }
 }
@@ -76,6 +78,13 @@ pub enum ManifestError {
     MissingCapability,
     /// The manifest entry path is not bundle-relative.
     UnsafeEntryPath,
+    /// The manifest entry extension does not match the requested runtime.
+    RuntimeEntryMismatch {
+        /// Runtime requested by the manifest.
+        runtime: RuntimeKind,
+        /// Bundle-relative entry file.
+        entry: String,
+    },
 }
 
 impl fmt::Display for ManifestError {
@@ -91,6 +100,11 @@ impl fmt::Display for ManifestError {
             Self::UnsafeEntryPath => {
                 write!(f, "plugin manifest entry must be a safe relative path")
             }
+            Self::RuntimeEntryMismatch { runtime, entry } => write!(
+                f,
+                "plugin manifest entry `{entry}` does not match `{}` runtime",
+                runtime_name(*runtime)
+            ),
         }
     }
 }
@@ -102,6 +116,29 @@ fn ensure_not_blank(field: &'static str, value: &str) -> Result<(), ManifestErro
         return Err(ManifestError::BlankField(field));
     }
     Ok(())
+}
+
+fn validate_runtime_entry(runtime: RuntimeKind, entry: &str) -> Result<(), ManifestError> {
+    let matches_runtime = match runtime {
+        RuntimeKind::Wasm => entry.ends_with(".wasm"),
+        RuntimeKind::JavaScript => entry.ends_with(".js") || entry.ends_with(".mjs"),
+    };
+
+    if matches_runtime {
+        Ok(())
+    } else {
+        Err(ManifestError::RuntimeEntryMismatch {
+            runtime,
+            entry: entry.to_owned(),
+        })
+    }
+}
+
+fn runtime_name(runtime: RuntimeKind) -> &'static str {
+    match runtime {
+        RuntimeKind::Wasm => "wasm",
+        RuntimeKind::JavaScript => "javascript",
+    }
 }
 
 #[cfg(test)]
@@ -149,6 +186,24 @@ mod tests {
     }
 
     #[test]
+    fn accepts_javascript_module_entry() {
+        let manifest = PluginManifest::from_json(
+            r#"{
+                "id": "com.example.js",
+                "name": "JS Plugin",
+                "version": "1.0.0",
+                "runtime": "javascript",
+                "entry": "dist/plugin.mjs",
+                "apiVersion": "1",
+                "capabilities": ["ui.panel"]
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(manifest.entry, "dist/plugin.mjs");
+    }
+
+    #[test]
     fn rejects_unsafe_entry_path() {
         let error = PluginManifest::from_json(
             r#"{
@@ -164,5 +219,23 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, ManifestError::UnsafeEntryPath));
+    }
+
+    #[test]
+    fn rejects_runtime_entry_mismatch() {
+        let error = PluginManifest::from_json(
+            r#"{
+                "id": "com.example.bad",
+                "name": "Bad",
+                "version": "1.0.0",
+                "runtime": "wasm",
+                "entry": "dist/plugin.js",
+                "apiVersion": "1",
+                "capabilities": ["device.read"]
+            }"#,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, ManifestError::RuntimeEntryMismatch { .. }));
     }
 }

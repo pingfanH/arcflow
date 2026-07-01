@@ -62,6 +62,8 @@ Bluetooth implementation, but desktop and mobile use Tauri 2 and Rust.
 Plugins support `wasm` and `javascript` runtimes. They run behind the Plugin API
 and never receive direct Bluetooth access. External software connects through the
 local WebSocket gateway and receives only the capabilities granted during hello.
+Plugin manifests must point WASM runtimes at `.wasm` entries and JavaScript
+runtimes at `.js` or `.mjs` entries.
 
 The current runtime implementation includes a recording adapter for both WASM
 and JavaScript. It validates sandbox admission, records load/invoke/unload
