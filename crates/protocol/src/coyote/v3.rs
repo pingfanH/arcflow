@@ -161,6 +161,14 @@ impl WaveSegment {
         self.frequency
     }
 
+    /// Returns the representative waveform period in milliseconds.
+    ///
+    /// Invalid or documented disabled-channel marker values return `None`.
+    #[must_use]
+    pub fn period_ms(self) -> Option<u16> {
+        decompress_wave_frequency(self.frequency)
+    }
+
     /// Returns the V3 waveform strength byte.
     #[must_use]
     pub fn strength(self) -> u8 {
@@ -225,6 +233,20 @@ impl ChannelWave {
             self.segments[1].frequency(),
             self.segments[2].frequency(),
             self.segments[3].frequency(),
+        ]
+    }
+
+    /// Returns representative waveform periods for all four segments.
+    ///
+    /// Entries are `None` when a segment uses a byte outside the documented
+    /// output frequency range, including the disabled-channel marker.
+    #[must_use]
+    pub fn periods_ms(self) -> [Option<u16>; CHANNEL_WAVE_LEN] {
+        [
+            self.segments[0].period_ms(),
+            self.segments[1].period_ms(),
+            self.segments[2].period_ms(),
+            self.segments[3].period_ms(),
         ]
     }
 
@@ -661,6 +683,7 @@ mod tests {
         assert_eq!(command.modes().a(), StrengthMode::Unchanged);
         assert_eq!(command.modes().b(), StrengthMode::Unchanged);
         assert_eq!(command.a_wave().frequencies(), [10, 10, 10, 10]);
+        assert_eq!(command.a_wave().periods_ms(), [Some(10); 4]);
         assert_eq!(command.a_wave().strengths(), [0, 10, 20, 30]);
         assert!(!command.b_wave().is_valid_for_output());
         assert_eq!(command.to_bytes(), bytes);
@@ -680,6 +703,10 @@ mod tests {
         assert_eq!(command.modes().b(), StrengthMode::Unchanged);
         assert_eq!(command.a_strength(), 10);
         assert_eq!(command.a_wave().frequencies(), [40, 60, 80, 100]);
+        assert_eq!(
+            command.a_wave().periods_ms(),
+            [Some(40), Some(60), Some(80), Some(100)]
+        );
         assert_eq!(command.a_wave().strengths(), [100, 90, 90, 90]);
         assert_eq!(command.to_bytes(), bytes);
     }
@@ -689,8 +716,16 @@ mod tests {
         let disabled = ChannelWave::disabled();
 
         assert_eq!(disabled.frequencies(), [0, 0, 0, 0]);
+        assert_eq!(disabled.periods_ms(), [None; 4]);
         assert_eq!(disabled.strengths(), [0, 0, 0, 101]);
         assert!(!disabled.is_valid_for_output());
+    }
+
+    #[test]
+    fn exposes_representative_periods_for_compressed_channel_wave() {
+        let wave = ChannelWave::raw([10, 120, 210, 241], [0, 10, 20, 30]);
+
+        assert_eq!(wave.periods_ms(), [Some(10), Some(200), Some(700), None]);
     }
 
     #[test]

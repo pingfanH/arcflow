@@ -22,6 +22,8 @@ Source material:
 - Coyote V3 waveform periods compress `10..=1000ms` into `10..=240` frequency bytes.
   `crates/protocol` exposes both compression and representative decompression helpers;
   decompression returns `None` for bytes outside the documented output range.
+  `ChannelWave::periods_ms()` exposes the four representative segment periods
+  while preserving `None` for invalid disabled-channel marker bytes.
 - A connected Coyote V3 session subscribes to both `0x150B` B1 notifications and
   the shared `0x1500` battery characteristic for status updates.
 - Rust Core builds BF writes from `SafetyLimits` and sends them through the same
