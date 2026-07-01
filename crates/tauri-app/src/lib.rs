@@ -2309,6 +2309,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn request_handler_routes_device_connect_before_core_fallback() {
+        let provider = Arc::new(ConnectingBleProvider::new(Some(91)));
+        let (runtime, core) = runtime_state_with_platform_provider(provider.clone());
+        let handler = external_request_handler(
+            core,
+            Arc::new(Mutex::new(Storage::in_memory().unwrap())),
+            runtime,
+            empty_plugin_runtime_state(),
+            PreviewPlaybackState::default(),
+        );
+        let session = session_with(vec![Capability::WaveControl]);
+        let request = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(42),
+            DEVICE_CONNECT_METHOD,
+            Some(serde_json::json!({ "deviceId": "coyote-v3" })),
+        );
+
+        let response = handler(session, request).await;
+
+        assert!(response.error.is_none());
+        assert_eq!(
+            provider.connected_devices(),
+            vec![DeviceId::new("coyote-v3")]
+        );
+        assert_eq!(response.result.unwrap()["devices"][0]["batteryPercent"], 91);
+    }
+
+    #[tokio::test]
     async fn preview_status_external_request_requires_device_read() {
         let (runtime, core) = runtime_state_with_core();
         let preview_state = PreviewPlaybackState::default();
