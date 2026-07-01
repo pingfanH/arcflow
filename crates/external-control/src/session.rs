@@ -24,7 +24,11 @@ impl GatewayPolicy {
     /// Constructs a local default policy with read-only device access.
     #[must_use]
     pub fn local_default() -> Self {
-        Self::new(vec![Capability::DeviceRead, Capability::EventsSubscribe])
+        Self::new(vec![
+            Capability::ExternalWebSocket,
+            Capability::DeviceRead,
+            Capability::EventsSubscribe,
+        ])
     }
 
     /// Returns the capabilities allowed by this policy.
@@ -135,12 +139,13 @@ mod tests {
         let hello = ClientHello {
             client_name: "OBS ArcFlow Bridge".to_owned(),
             protocol_version: PROTOCOL_VERSION,
-            requested_capabilities: vec![Capability::DeviceRead],
+            requested_capabilities: vec![Capability::ExternalWebSocket, Capability::DeviceRead],
         };
 
         let session = GatewayPolicy::local_default().accept(hello).unwrap();
 
         assert_eq!(session.client_name(), "OBS ArcFlow Bridge");
+        assert!(session.has_capability(Capability::ExternalWebSocket));
         assert!(session.has_capability(Capability::DeviceRead));
     }
 

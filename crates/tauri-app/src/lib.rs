@@ -843,6 +843,7 @@ async fn stop_external_control(
 fn external_control_allowed_capabilities(control_mode: bool) -> Vec<Capability> {
     if control_mode {
         vec![
+            Capability::ExternalWebSocket,
             Capability::DeviceRead,
             Capability::EventsSubscribe,
             Capability::WaveControl,
@@ -2080,7 +2081,11 @@ mod tests {
     fn external_control_policy_defaults_to_read_only() {
         assert_eq!(
             external_control_allowed_capabilities(false),
-            vec![Capability::DeviceRead, Capability::EventsSubscribe]
+            vec![
+                Capability::ExternalWebSocket,
+                Capability::DeviceRead,
+                Capability::EventsSubscribe,
+            ]
         );
     }
 
@@ -2088,6 +2093,7 @@ mod tests {
     fn external_control_policy_can_enable_control_capabilities() {
         let capabilities = external_control_allowed_capabilities(true);
 
+        assert!(capabilities.contains(&Capability::ExternalWebSocket));
         assert!(capabilities.contains(&Capability::DeviceRead));
         assert!(capabilities.contains(&Capability::EventsSubscribe));
         assert!(capabilities.contains(&Capability::WaveControl));

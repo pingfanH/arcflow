@@ -58,11 +58,13 @@ events.subscribe
 external.ws
 ```
 
-The default local policy is intentionally conservative. Read-only bridge mode grants
-`device.read` and `events.subscribe`. The UI can explicitly start the bridge in
-control mode, which additionally allows `wave.control`, `script.run`,
-`script.manage`, and `plugin.manage`. A running bridge keeps the policy it was
-started with; stop and restart it to switch modes.
+The default local policy is intentionally conservative. Read-only bridge mode
+grants `external.ws`, `device.read`, and `events.subscribe`. `external.ws`
+identifies the local plugin bridge connection and does not grant host methods by
+itself. The UI can explicitly start the bridge in control mode, which
+additionally allows `wave.control`, `script.run`, `script.manage`, and
+`plugin.manage`. A running bridge keeps the policy it was started with; stop and
+restart it to switch modes.
 
 Plugin registry mutations are persisted in SQLite and synchronized into the
 Core-owned sandboxed plugin runtime. Plugins still cannot access Bluetooth
