@@ -15,6 +15,11 @@ pub const COYOTE_BATTERY_SERVICE_UUID: u16 = 0x180A;
 pub const COYOTE_V2_SERVICE_UUID: u16 = 0x180B;
 /// DG-LAB Coyote V3 service short UUID.
 pub const COYOTE_V3_SERVICE_UUID: u16 = 0x180C;
+/// Characteristics subscribed after connecting to a Coyote V3 pulse host.
+pub const COYOTE_V3_STATUS_CHARACTERISTICS: [BleCharacteristic; 2] = [
+    BleCharacteristic::CoyoteV3Notify,
+    BleCharacteristic::CoyoteBattery,
+];
 
 /// BLE characteristic known to ArcFlow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -239,6 +244,13 @@ mod tests {
         assert_eq!(
             BleCharacteristic::CoyoteBattery.service_short_uuid(),
             0x180A
+        );
+        assert_eq!(
+            COYOTE_V3_STATUS_CHARACTERISTICS,
+            [
+                BleCharacteristic::CoyoteV3Notify,
+                BleCharacteristic::CoyoteBattery
+            ]
         );
     }
 

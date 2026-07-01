@@ -28,7 +28,7 @@ pub mod session;
 pub use ble::{
     bluetooth_base_uuid, BleAdvertisement, BleCharacteristic, BleDeviceDiscoveryController,
     BleDiscovery, BleNotification, BleTransport, BleWrite, COYOTE_BATTERY_SERVICE_UUID,
-    COYOTE_V2_SERVICE_UUID, COYOTE_V3_SERVICE_UUID,
+    COYOTE_V2_SERVICE_UUID, COYOTE_V3_SERVICE_UUID, COYOTE_V3_STATUS_CHARACTERISTICS,
 };
 pub use command::CoreCommand;
 pub use coyote::CoyoteV3CommandBuilder;

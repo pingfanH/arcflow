@@ -8,7 +8,7 @@ use arcflow_wave::CoyoteV3Window;
 
 use crate::{
     BleCharacteristic, BleNotification, BleTransport, CoreError, CoyoteV3CommandBuilder, DeviceId,
-    SafetyLimits,
+    SafetyLimits, COYOTE_V3_STATUS_CHARACTERISTICS,
 };
 
 /// Coyote V3 strength status parsed from a notify message.
@@ -66,11 +66,13 @@ where
         self.safety_limits
     }
 
-    /// Subscribes to Coyote V3 notify messages.
+    /// Subscribes to Coyote V3 strength and battery status notifications.
     pub async fn subscribe_coyote_v3(&self) -> Result<(), CoreError> {
-        self.transport
-            .subscribe(BleCharacteristic::CoyoteV3Notify)
-            .await
+        for characteristic in COYOTE_V3_STATUS_CHARACTERISTICS {
+            self.transport.subscribe(characteristic).await?;
+        }
+
+        Ok(())
     }
 
     /// Writes one Coyote V3 wave window to the device.
@@ -189,7 +191,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribes_to_coyote_v3_notify() {
+    async fn subscribes_to_coyote_v3_status_notifications() {
         let session = DeviceSession::new(
             DeviceId::new("coyote-v3"),
             FakeTransport::default(),
@@ -199,7 +201,13 @@ mod tests {
         session.subscribe_coyote_v3().await.unwrap();
 
         let subscriptions = session.transport.subscriptions.lock().unwrap();
-        assert_eq!(*subscriptions, vec![BleCharacteristic::CoyoteV3Notify]);
+        assert_eq!(
+            *subscriptions,
+            vec![
+                BleCharacteristic::CoyoteV3Notify,
+                BleCharacteristic::CoyoteBattery
+            ]
+        );
     }
 
     #[tokio::test]
