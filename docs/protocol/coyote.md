@@ -19,6 +19,9 @@ Source material:
   one-byte `0..=100` percentage instead of being tied to one protocol version.
 - Coyote V2 uses three-byte little-endian bit fields for AB strength and waveform frames.
 - Coyote V3 uses B0 write commands, B1 strength notifications, and BF soft-limit/balance commands.
+- Coyote V3 waveform periods compress `10..=1000ms` into `10..=240` frequency bytes.
+  `crates/protocol` exposes both compression and representative decompression helpers;
+  decompression returns `None` for bytes outside the documented output range.
 - A connected Coyote V3 session subscribes to both `0x150B` B1 notifications and
   the shared `0x1500` battery characteristic for status updates.
 - Rust Core builds BF writes from `SafetyLimits` and sends them through the same

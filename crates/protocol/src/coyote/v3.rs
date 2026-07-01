@@ -594,6 +594,22 @@ pub fn compress_wave_frequency(period_ms: u16) -> u8 {
     }
 }
 
+/// Expands a V3 compressed waveform frequency byte to a representative period in milliseconds.
+///
+/// The protocol compresses longer periods into buckets. This returns the exact
+/// period for `10..=100`, the lower aligned period for `101..=200`, and the
+/// lower aligned period for `201..=240`. Bytes outside the documented output
+/// frequency range return `None`.
+#[must_use]
+pub fn decompress_wave_frequency(frequency: u8) -> Option<u16> {
+    match frequency {
+        10..=100 => Some(u16::from(frequency)),
+        101..=200 => Some((u16::from(frequency) - 100) * 5 + 100),
+        201..=240 => Some((u16::from(frequency) - 200) * 10 + 600),
+        _ => None,
+    }
+}
+
 fn ensure_len(name: &'static str, bytes: &[u8], expected: usize) -> Result<(), ProtocolError> {
     if bytes.len() != expected {
         return Err(ProtocolError::InvalidLength {
@@ -704,5 +720,18 @@ mod tests {
         assert_eq!(compress_wave_frequency(700), 210);
         assert_eq!(compress_wave_frequency(1000), 240);
         assert_eq!(compress_wave_frequency(1), 10);
+    }
+
+    #[test]
+    fn decompresses_v3_wave_frequency_bytes() {
+        assert_eq!(decompress_wave_frequency(10), Some(10));
+        assert_eq!(decompress_wave_frequency(100), Some(100));
+        assert_eq!(decompress_wave_frequency(101), Some(105));
+        assert_eq!(decompress_wave_frequency(120), Some(200));
+        assert_eq!(decompress_wave_frequency(200), Some(600));
+        assert_eq!(decompress_wave_frequency(210), Some(700));
+        assert_eq!(decompress_wave_frequency(240), Some(1000));
+        assert_eq!(decompress_wave_frequency(0), None);
+        assert_eq!(decompress_wave_frequency(241), None);
     }
 }
