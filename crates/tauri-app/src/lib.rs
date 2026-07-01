@@ -148,6 +148,20 @@ struct AppStatus {
     max_wave_strength: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+enum FrontendPlatform {
+    #[serde(rename = "desktop")]
+    Desktop,
+    #[serde(rename = "mobile")]
+    Mobile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FrontendPlatformResponse {
+    platform: FrontendPlatform,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ExternalControlStatus {
@@ -259,6 +273,25 @@ fn app_status() -> AppStatus {
         external_control_bind: DEFAULT_LOCAL_BIND,
         max_channel_strength: limits.max_channel_strength,
         max_wave_strength: limits.max_wave_strength,
+    }
+}
+
+fn current_frontend_platform() -> FrontendPlatform {
+    if cfg!(any(
+        feature = "mobile-shell",
+        target_os = "android",
+        target_os = "ios"
+    )) {
+        FrontendPlatform::Mobile
+    } else {
+        FrontendPlatform::Desktop
+    }
+}
+
+#[tauri::command]
+fn frontend_platform() -> FrontendPlatformResponse {
+    FrontendPlatformResponse {
+        platform: current_frontend_platform(),
     }
 }
 
@@ -1125,6 +1158,7 @@ where
         .manage(ExternalControlState::default())
         .invoke_handler(tauri::generate_handler![
             app_status,
+            frontend_platform,
             storage_status,
             runtime_status,
             runtime_events,
@@ -1325,6 +1359,16 @@ mod tests {
             SubmitWaveWindowResponse {
                 device_id: "coyote-v3".to_owned(),
                 accepted: true,
+            }
+        );
+    }
+
+    #[test]
+    fn frontend_platform_reports_current_shell() {
+        assert_eq!(
+            frontend_platform(),
+            FrontendPlatformResponse {
+                platform: current_frontend_platform(),
             }
         );
     }

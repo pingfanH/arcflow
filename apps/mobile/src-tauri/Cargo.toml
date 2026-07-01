@@ -14,6 +14,6 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-arcflow-tauri-app.workspace = true
+arcflow-tauri-app = { workspace = true, features = ["mobile-shell"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"

@@ -33,6 +33,12 @@ type AppStatus = {
   maxWaveStrength: number;
 };
 
+type FrontendPlatform = "desktop" | "mobile";
+
+type FrontendPlatformResponse = {
+  platform: FrontendPlatform;
+};
+
 type ExternalControlStatus = {
   running: boolean;
   bindAddress: string | null;
@@ -127,6 +133,47 @@ const navItems = [
 
 const waveBars = [28, 44, 62, 76, 68, 52, 34, 48, 72, 84, 58, 38];
 
+const mobileFrontendQuery = "(max-width: 767px), (hover: none) and (pointer: coarse)";
+
+const shellClasses = {
+  desktop: {
+    root: "min-h-screen bg-stone-50 text-zinc-950",
+    frame: "flex min-h-screen",
+    sideNav:
+      "hidden w-20 shrink-0 border-r border-zinc-200 bg-white md:flex md:flex-col md:items-center md:gap-3 md:py-5",
+    mobileNav: "hidden",
+    content: "flex min-w-0 flex-1 flex-col",
+    header:
+      "flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-3 md:px-6",
+    workspace: "grid min-w-0 gap-4 p-4 md:grid-cols-[1.4fr_0.8fr] md:p-6",
+    footer: "border-t border-zinc-200 px-4 py-3 text-xs text-zinc-500 md:px-6",
+  },
+  mobile: {
+    root: "min-h-screen bg-zinc-50 pb-24 text-zinc-950",
+    frame: "flex min-h-screen",
+    sideNav: "hidden",
+    mobileNav:
+      "fixed inset-x-0 bottom-0 z-20 grid grid-cols-5 gap-1 border-t border-zinc-200 bg-white/95 px-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-[0_-8px_24px_rgba(24,24,27,0.08)] backdrop-blur",
+    content: "flex min-w-0 flex-1 flex-col",
+    header:
+      "sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-white/95 px-4 py-3 backdrop-blur",
+    workspace: "grid min-w-0 gap-3 p-3 sm:p-4",
+    footer: "px-4 pb-4 pt-2 text-xs text-zinc-500",
+  },
+} satisfies Record<
+  FrontendPlatform,
+  {
+    root: string;
+    frame: string;
+    sideNav: string;
+    mobileNav: string;
+    content: string;
+    header: string;
+    workspace: string;
+    footer: string;
+  }
+>;
+
 const stoppedExternalControl: ExternalControlStatus = {
   running: false,
   bindAddress: null,
@@ -183,6 +230,41 @@ const starterScriptDocument = {
   ],
 };
 
+function viewportFrontendPlatform(): FrontendPlatform {
+  if (typeof window === "undefined") {
+    return "desktop";
+  }
+
+  return window.matchMedia(mobileFrontendQuery).matches ? "mobile" : "desktop";
+}
+
+function normalizeFrontendPlatform(platform: string): FrontendPlatform {
+  return platform === "mobile" ? "mobile" : "desktop";
+}
+
+function useFrontendPlatform(): FrontendPlatform {
+  const [shellPlatform, setShellPlatform] = useState<FrontendPlatform | null>(null);
+  const [viewportPlatform, setViewportPlatform] =
+    useState<FrontendPlatform>(viewportFrontendPlatform);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(mobileFrontendQuery);
+    const updateViewportPlatform = () => {
+      setViewportPlatform(mediaQuery.matches ? "mobile" : "desktop");
+    };
+
+    updateViewportPlatform();
+    mediaQuery.addEventListener("change", updateViewportPlatform);
+    invoke<FrontendPlatformResponse>("frontend_platform")
+      .then((result) => setShellPlatform(normalizeFrontendPlatform(result.platform)))
+      .catch(() => setShellPlatform(null));
+
+    return () => mediaQuery.removeEventListener("change", updateViewportPlatform);
+  }, []);
+
+  return shellPlatform === "mobile" || viewportPlatform === "mobile" ? "mobile" : "desktop";
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<(typeof navItems)[number]["id"]>("device");
   const [status, setStatus] = useState<AppStatus | null>(null);
@@ -209,6 +291,8 @@ function App() {
   const [playing, setPlaying] = useState(false);
   const [channelA, setChannelA] = useState(12);
   const [channelB, setChannelB] = useState(0);
+  const frontendPlatform = useFrontendPlatform();
+  const shell = shellClasses[frontendPlatform];
 
   const refreshExternalStatus = useCallback(() => {
     invoke<ExternalControlStatus>("external_control_status")
@@ -487,9 +571,9 @@ function App() {
   }, [connectedDeviceCount, lastScan]);
 
   return (
-    <main className="min-h-screen bg-stone-50 text-zinc-950">
-      <div className="flex min-h-screen">
-        <aside className="hidden w-20 shrink-0 border-r border-zinc-200 bg-white md:flex md:flex-col md:items-center md:gap-3 md:py-5">
+    <main className={shell.root} data-platform={frontendPlatform}>
+      <div className={shell.frame}>
+        <aside className={shell.sideNav}>
           <div className="mb-4 grid size-10 place-items-center rounded-lg bg-teal-600 text-white">
             <Zap size={20} />
           </div>
@@ -514,8 +598,8 @@ function App() {
           })}
         </aside>
 
-        <section className="flex min-w-0 flex-1 flex-col">
-          <header className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 py-3 md:px-6">
+        <section className={shell.content}>
+          <header className={shell.header}>
             <div>
               <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">
                 {activeLabel}
@@ -546,7 +630,7 @@ function App() {
             </div>
           </header>
 
-          <div className="grid min-w-0 gap-4 p-4 md:grid-cols-[1.4fr_0.8fr] md:p-6">
+          <div className={shell.workspace}>
             <section className="min-w-0 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
@@ -701,11 +785,32 @@ function App() {
             </section>
           </div>
 
-          <footer className="border-t border-zinc-200 px-4 py-3 text-xs text-zinc-500 md:px-6">
+          <footer className={shell.footer}>
             Local runtime ready
           </footer>
         </section>
       </div>
+
+      <nav className={shell.mobileNav} aria-label="Primary navigation">
+        {navItems.map((item) => {
+          const Icon = item.icon;
+          const selected = activeTab === item.id;
+          return (
+            <button
+              key={item.id}
+              className={`grid min-w-0 place-items-center gap-1 rounded-lg px-1.5 py-1.5 text-[11px] font-medium transition ${
+                selected ? "bg-teal-50 text-teal-700" : "text-zinc-500 hover:bg-zinc-50"
+              }`}
+              title={item.label}
+              type="button"
+              onClick={() => setActiveTab(item.id)}
+            >
+              <Icon size={18} />
+              <span className="max-w-full truncate">{item.label}</span>
+            </button>
+          );
+        })}
+      </nav>
     </main>
   );
 }
@@ -1016,6 +1121,9 @@ function PluginRegistryPanel({
 
       <div className="mt-3 flex gap-2">
         <input
+          id="plugin-bundle-path"
+          name="pluginBundlePath"
+          aria-label="Plugin bundle path"
           className="h-9 min-w-0 flex-1 rounded-lg border border-zinc-200 bg-white px-3 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-teal-500"
           disabled={busy}
           placeholder="Bundle path"
@@ -1181,6 +1289,8 @@ type ChannelControlProps = {
 };
 
 function ChannelControl({ label, value, limit, onChange }: ChannelControlProps) {
+  const inputId = `${label.toLowerCase().replace(/\s+/g, "-")}-strength`;
+
   return (
     <div className="min-w-0 rounded-lg border border-zinc-200 p-3">
       <div className="mb-3 flex items-center justify-between">
@@ -1191,6 +1301,9 @@ function ChannelControl({ label, value, limit, onChange }: ChannelControlProps) 
         <div className="tabular-nums text-sm font-semibold">{value}</div>
       </div>
       <input
+        id={inputId}
+        name={inputId}
+        aria-label={`${label} strength`}
         className="w-full min-w-0 accent-teal-600"
         max={limit}
         min={0}

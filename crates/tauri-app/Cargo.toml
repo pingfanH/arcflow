@@ -5,6 +5,10 @@ edition.workspace = true
 description = "Shared Tauri 2 application runtime for ArcFlow desktop and mobile shells."
 publish = false
 
+[features]
+default = []
+mobile-shell = []
+
 [dependencies]
 arcflow-core.workspace = true
 arcflow-external-control.workspace = true

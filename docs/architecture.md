@@ -71,6 +71,20 @@ Desktop and mobile Tauri shells are intentionally thin. Each shell owns its
 `tauri.conf.json` and platform entrypoint, then calls the shared
 `arcflow-tauri-app` runtime.
 
+## Shared Frontend Shell
+
+Desktop and mobile reuse the same React application. The mobile Tauri config
+builds and serves the desktop frontend bundle instead of maintaining a second
+React tree. Platform differences belong in shell-level style profiles such as
+navigation placement, spacing, sticky headers, and safe-area padding. Device
+state, commands, storage, plugin management, scripts, and external control UI
+must stay in shared components and shared hooks.
+
+The shared Tauri runtime exposes `frontend_platform` so React can select a
+desktop or mobile style profile without branching business logic. Browser
+viewport checks may make the desktop shell use compact mobile styling in narrow
+windows, but mobile shells must not fork command handling or duplicate UI state.
+
 ## Plugin And External Control
 
 Plugins support `wasm` and `javascript` runtimes. They run behind the Plugin API
