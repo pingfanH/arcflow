@@ -6,6 +6,45 @@ use serde_json::Value;
 
 use crate::{PluginManifest, RuntimeKind};
 
+/// Context needed by a runtime to load one plugin bundle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginLoadRequest {
+    manifest: PluginManifest,
+    bundle_root: Option<String>,
+}
+
+impl PluginLoadRequest {
+    /// Constructs a load request for a manifest-only plugin.
+    #[must_use]
+    pub fn new(manifest: PluginManifest) -> Self {
+        Self {
+            manifest,
+            bundle_root: None,
+        }
+    }
+
+    /// Constructs a load request for a plugin installed from a bundle root.
+    #[must_use]
+    pub fn with_bundle_root(manifest: PluginManifest, bundle_root: impl Into<String>) -> Self {
+        Self {
+            manifest,
+            bundle_root: Some(bundle_root.into()),
+        }
+    }
+
+    /// Returns the plugin manifest.
+    #[must_use]
+    pub fn manifest(&self) -> &PluginManifest {
+        &self.manifest
+    }
+
+    /// Returns the plugin bundle root if the plugin was installed from disk.
+    #[must_use]
+    pub fn bundle_root(&self) -> Option<&str> {
+        self.bundle_root.as_deref()
+    }
+}
+
 /// Handle returned by a runtime after loading a plugin.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeHandle {
@@ -94,8 +133,8 @@ impl PluginOutput {
 /// Runtime Adapter implemented by WASM and JavaScript engines.
 #[async_trait]
 pub trait RuntimeAdapter {
-    /// Load a plugin manifest and return a runtime handle.
-    async fn load(&self, manifest: &PluginManifest) -> Result<RuntimeHandle, RuntimeError>;
+    /// Load a plugin and return a runtime handle.
+    async fn load(&self, request: &PluginLoadRequest) -> Result<RuntimeHandle, RuntimeError>;
 
     /// Invoke a loaded plugin.
     async fn invoke(

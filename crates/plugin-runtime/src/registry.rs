@@ -9,6 +9,7 @@ use crate::{PluginManifest, RuntimeKind};
 pub struct PluginRecord {
     manifest: PluginManifest,
     enabled: bool,
+    bundle_root: Option<String>,
 }
 
 impl PluginRecord {
@@ -18,6 +19,20 @@ impl PluginRecord {
         Self {
             manifest,
             enabled: false,
+            bundle_root: None,
+        }
+    }
+
+    /// Constructs an installed, disabled plugin record with a bundle root.
+    #[must_use]
+    pub fn installed_with_bundle_root(
+        manifest: PluginManifest,
+        bundle_root: impl Into<String>,
+    ) -> Self {
+        Self {
+            manifest,
+            enabled: false,
+            bundle_root: Some(bundle_root.into()),
         }
     }
 
@@ -38,6 +53,12 @@ impl PluginRecord {
     pub fn runtime(&self) -> RuntimeKind {
         self.manifest.runtime
     }
+
+    /// Returns the plugin bundle root if the plugin was installed from disk.
+    #[must_use]
+    pub fn bundle_root(&self) -> Option<&str> {
+        self.bundle_root.as_deref()
+    }
 }
 
 /// Registry of installed plugins.
@@ -55,16 +76,37 @@ impl PluginRegistry {
 
     /// Installs a plugin manifest as disabled.
     pub fn install(&mut self, manifest: PluginManifest) -> Result<(), PluginRegistryError> {
+        self.install_record(PluginRecord::installed(manifest))
+    }
+
+    /// Installs a plugin manifest from a bundle root as disabled.
+    pub fn install_with_bundle_root(
+        &mut self,
+        manifest: PluginManifest,
+        bundle_root: impl Into<String>,
+    ) -> Result<(), PluginRegistryError> {
+        let bundle_root = bundle_root.into();
+        if bundle_root.trim().is_empty() {
+            return Err(PluginRegistryError::InvalidBundleRoot(manifest.id));
+        }
+
+        self.install_record(PluginRecord::installed_with_bundle_root(
+            manifest,
+            bundle_root,
+        ))
+    }
+
+    fn install_record(&mut self, record: PluginRecord) -> Result<(), PluginRegistryError> {
+        let manifest = record.manifest();
         manifest
             .validate()
             .map_err(|error| PluginRegistryError::InvalidManifest(error.to_string()))?;
 
         if self.records.contains_key(&manifest.id) {
-            return Err(PluginRegistryError::AlreadyInstalled(manifest.id));
+            return Err(PluginRegistryError::AlreadyInstalled(manifest.id.clone()));
         }
 
-        self.records
-            .insert(manifest.id.clone(), PluginRecord::installed(manifest));
+        self.records.insert(manifest.id.clone(), record);
         Ok(())
     }
 
@@ -116,6 +158,8 @@ pub enum PluginRegistryError {
     AlreadyInstalled(String),
     /// Plugin id is not installed.
     NotInstalled(String),
+    /// Bundle root was blank.
+    InvalidBundleRoot(String),
 }
 
 impl std::fmt::Display for PluginRegistryError {
@@ -126,6 +170,9 @@ impl std::fmt::Display for PluginRegistryError {
                 write!(f, "plugin `{plugin_id}` is already installed")
             }
             Self::NotInstalled(plugin_id) => write!(f, "plugin `{plugin_id}` is not installed"),
+            Self::InvalidBundleRoot(plugin_id) => {
+                write!(f, "plugin `{plugin_id}` bundle root must not be blank")
+            }
         }
     }
 }
@@ -158,6 +205,32 @@ mod tests {
         let record = registry.get("com.example.a").unwrap();
         assert!(!record.enabled());
         assert_eq!(record.runtime(), RuntimeKind::Wasm);
+    }
+
+    #[test]
+    fn installs_plugins_with_bundle_root() {
+        let mut registry = PluginRegistry::new();
+
+        registry
+            .install_with_bundle_root(manifest("com.example.a"), "/plugins/com.example.a")
+            .unwrap();
+
+        let record = registry.get("com.example.a").unwrap();
+        assert_eq!(record.bundle_root(), Some("/plugins/com.example.a"));
+    }
+
+    #[test]
+    fn rejects_blank_bundle_root() {
+        let mut registry = PluginRegistry::new();
+
+        let error = registry
+            .install_with_bundle_root(manifest("com.example.a"), " ")
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            PluginRegistryError::InvalidBundleRoot("com.example.a".to_owned())
+        );
     }
 
     #[test]

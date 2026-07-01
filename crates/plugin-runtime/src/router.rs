@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 
 use crate::{
-    PluginInvocation, PluginManifest, PluginOutput, RuntimeAdapter, RuntimeError, RuntimeHandle,
+    PluginInvocation, PluginLoadRequest, PluginOutput, RuntimeAdapter, RuntimeError, RuntimeHandle,
     RuntimeKind,
 };
 
@@ -40,10 +40,10 @@ where
     W: RuntimeAdapter + Send + Sync,
     J: RuntimeAdapter + Send + Sync,
 {
-    async fn load(&self, manifest: &PluginManifest) -> Result<RuntimeHandle, RuntimeError> {
-        match manifest.runtime {
-            RuntimeKind::Wasm => self.wasm.load(manifest).await,
-            RuntimeKind::JavaScript => self.javascript.load(manifest).await,
+    async fn load(&self, request: &PluginLoadRequest) -> Result<RuntimeHandle, RuntimeError> {
+        match request.manifest().runtime {
+            RuntimeKind::Wasm => self.wasm.load(request).await,
+            RuntimeKind::JavaScript => self.javascript.load(request).await,
         }
     }
 
@@ -73,7 +73,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{Capability, PluginAction};
+    use crate::{Capability, PluginAction, PluginManifest};
 
     #[derive(Debug)]
     struct RecordingRuntime {
@@ -96,7 +96,8 @@ mod tests {
 
     #[async_trait]
     impl RuntimeAdapter for RecordingRuntime {
-        async fn load(&self, manifest: &PluginManifest) -> Result<RuntimeHandle, RuntimeError> {
+        async fn load(&self, request: &PluginLoadRequest) -> Result<RuntimeHandle, RuntimeError> {
+            let manifest = request.manifest();
             self.loaded.lock().unwrap().push(manifest.id.clone());
             Ok(RuntimeHandle::new(&manifest.id, manifest.runtime))
         }
@@ -145,11 +146,17 @@ mod tests {
         );
 
         router
-            .load(&manifest("com.example.wasm", RuntimeKind::Wasm))
+            .load(&PluginLoadRequest::new(manifest(
+                "com.example.wasm",
+                RuntimeKind::Wasm,
+            )))
             .await
             .unwrap();
         router
-            .load(&manifest("com.example.js", RuntimeKind::JavaScript))
+            .load(&PluginLoadRequest::new(manifest(
+                "com.example.js",
+                RuntimeKind::JavaScript,
+            )))
             .await
             .unwrap();
 

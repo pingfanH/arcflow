@@ -50,9 +50,14 @@ impl<'a> PluginRegistryPersistence<'a> {
                 .map_err(|error| PluginRegistryPersistenceError::Manifest(error.to_string()))?;
             let plugin_id = manifest.id.clone();
 
-            registry
-                .install(manifest)
-                .map_err(|error| PluginRegistryPersistenceError::Registry(error.to_string()))?;
+            match stored.bundle_root {
+                Some(bundle_root) => registry
+                    .install_with_bundle_root(manifest, bundle_root)
+                    .map_err(|error| PluginRegistryPersistenceError::Registry(error.to_string()))?,
+                None => registry
+                    .install(manifest)
+                    .map_err(|error| PluginRegistryPersistenceError::Registry(error.to_string()))?,
+            }
 
             if stored.enabled {
                 registry
@@ -90,27 +95,18 @@ impl<'a> PluginRegistryPersistence<'a> {
     ) -> Result<Vec<PluginRegistryEntry>, PluginRegistryPersistenceError> {
         let manifest = PluginManifest::from_json(manifest_json)
             .map_err(|error| PluginRegistryPersistenceError::Manifest(error.to_string()))?;
-        let plugin_id = manifest.id.clone();
         let mut registry = self.load()?;
 
-        registry
-            .install(manifest)
-            .map_err(|error| PluginRegistryPersistenceError::Registry(error.to_string()))?;
-        self.save(&registry)?;
-        if let Some(bundle_root) = bundle_root {
-            let store = self.storage.plugin_registry();
-            let stored = store.get(&plugin_id)?.ok_or_else(|| {
-                PluginRegistryPersistenceError::Storage(format!(
-                    "plugin `{plugin_id}` was not persisted after install"
-                ))
-            })?;
-            store.upsert(&StoredPluginRecord::with_bundle_root(
-                stored.plugin_id,
-                stored.manifest_json,
-                stored.enabled,
-                bundle_root,
-            ))?;
+        match bundle_root {
+            Some(bundle_root) => registry
+                .install_with_bundle_root(manifest, bundle_root)
+                .map_err(|error| PluginRegistryPersistenceError::Registry(error.to_string()))?,
+            None => registry
+                .install(manifest)
+                .map_err(|error| PluginRegistryPersistenceError::Registry(error.to_string()))?,
         }
+
+        self.save(&registry)?;
 
         self.list_entries()
     }
@@ -177,7 +173,10 @@ impl<'a> PluginRegistryPersistence<'a> {
             let manifest_json = serde_json::to_string(record.manifest())
                 .map_err(|error| PluginRegistryPersistenceError::Json(error.to_string()))?;
             let plugin_id = record.manifest().id.clone();
-            let bundle_root = existing_bundle_roots.get(&plugin_id).cloned().flatten();
+            let bundle_root = record
+                .bundle_root()
+                .map(str::to_owned)
+                .or_else(|| existing_bundle_roots.get(&plugin_id).cloned().flatten());
             store.upsert(&stored_plugin_record(
                 plugin_id,
                 manifest_json,
@@ -362,6 +361,15 @@ mod tests {
                 .unwrap()
                 .bundle_root,
             Some("/plugins/plugin.a".to_owned())
+        );
+        assert_eq!(
+            persistence
+                .load()
+                .unwrap()
+                .get("plugin.a")
+                .unwrap()
+                .bundle_root(),
+            Some("/plugins/plugin.a")
         );
     }
 

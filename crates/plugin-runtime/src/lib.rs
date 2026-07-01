@@ -24,6 +24,7 @@ pub use recording::{
 pub use registry::{PluginRecord, PluginRegistry, PluginRegistryError};
 pub use router::RuntimeRouter;
 pub use runtime::{
-    PluginAction, PluginInvocation, PluginOutput, RuntimeAdapter, RuntimeError, RuntimeHandle,
+    PluginAction, PluginInvocation, PluginLoadRequest, PluginOutput, RuntimeAdapter, RuntimeError,
+    RuntimeHandle,
 };
 pub use sandbox::{SandboxPolicy, SandboxPolicyError, SandboxedRuntime, UnavailableRuntimeAdapter};

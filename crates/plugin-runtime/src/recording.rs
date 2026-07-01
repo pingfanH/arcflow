@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::{
-    PluginInvocation, PluginManifest, PluginOutput, RuntimeAdapter, RuntimeError, RuntimeHandle,
+    PluginInvocation, PluginLoadRequest, PluginOutput, RuntimeAdapter, RuntimeError, RuntimeHandle,
     RuntimeKind,
 };
 
@@ -65,7 +65,8 @@ impl RecordingRuntimeAdapter {
 
 #[async_trait]
 impl RuntimeAdapter for RecordingRuntimeAdapter {
-    async fn load(&self, manifest: &PluginManifest) -> Result<RuntimeHandle, RuntimeError> {
+    async fn load(&self, request: &PluginLoadRequest) -> Result<RuntimeHandle, RuntimeError> {
+        let manifest = request.manifest();
         let mut state = self.lock_state();
         state.ensure_runtime(manifest.runtime, &manifest.id)?;
 
@@ -83,6 +84,7 @@ impl RuntimeAdapter for RecordingRuntimeAdapter {
                 plugin_id: manifest.id.clone(),
                 runtime: manifest.runtime,
                 entry: manifest.entry.clone(),
+                bundle_root: request.bundle_root().map(str::to_owned),
             },
         );
         state.events.push(RecordingRuntimeEvent::Loaded {
@@ -151,6 +153,8 @@ pub struct RecordedPlugin {
     pub runtime: RuntimeKind,
     /// Bundle-relative entry file from the manifest.
     pub entry: String,
+    /// Bundle root directory if the plugin was installed from disk.
+    pub bundle_root: Option<String>,
 }
 
 /// Lifecycle event recorded by [`RecordingRuntimeAdapter`].
@@ -242,7 +246,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{Capability, PluginHost, RuntimeRouter, SandboxedRuntime};
+    use crate::{Capability, PluginHost, PluginManifest, RuntimeRouter, SandboxedRuntime};
 
     fn manifest(id: &str, runtime: RuntimeKind) -> PluginManifest {
         PluginManifest {
@@ -264,7 +268,10 @@ mod tests {
         let runtime = RecordingRuntimeAdapter::wasm();
         let manifest = manifest("com.example.wasm", RuntimeKind::Wasm);
 
-        let handle = runtime.load(&manifest).await.unwrap();
+        let handle = runtime
+            .load(&PluginLoadRequest::new(manifest))
+            .await
+            .unwrap();
         let output = runtime
             .invoke(&handle, PluginInvocation::new("tick", json!({ "n": 1 })))
             .await
@@ -317,7 +324,10 @@ mod tests {
         let runtime = RecordingRuntimeAdapter::wasm();
 
         let error = runtime
-            .load(&manifest("com.example.js", RuntimeKind::JavaScript))
+            .load(&PluginLoadRequest::new(manifest(
+                "com.example.js",
+                RuntimeKind::JavaScript,
+            )))
             .await
             .unwrap_err();
 
@@ -339,8 +349,11 @@ mod tests {
         let wasm = manifest("com.example.wasm", RuntimeKind::Wasm);
         let javascript = manifest("com.example.js", RuntimeKind::JavaScript);
 
-        let wasm_handle = router.load(&wasm).await.unwrap();
-        let javascript_handle = router.load(&javascript).await.unwrap();
+        let wasm_handle = router.load(&PluginLoadRequest::new(wasm)).await.unwrap();
+        let javascript_handle = router
+            .load(&PluginLoadRequest::new(javascript))
+            .await
+            .unwrap();
         router
             .invoke(&javascript_handle, PluginInvocation::new("tick", json!({})))
             .await
@@ -354,6 +367,7 @@ mod tests {
                 plugin_id: "com.example.js".to_owned(),
                 runtime: RuntimeKind::JavaScript,
                 entry: "dist/plugin.js".to_owned(),
+                bundle_root: None,
             }]
         );
     }

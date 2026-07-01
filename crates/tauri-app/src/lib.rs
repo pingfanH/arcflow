@@ -212,6 +212,7 @@ struct RuntimePluginSnapshot {
     plugin_id: String,
     runtime: RuntimeKind,
     entry: String,
+    bundle_root: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -769,6 +770,7 @@ fn runtime_plugin_snapshot(plugin: RecordedPlugin) -> RuntimePluginSnapshot {
         plugin_id: plugin.plugin_id,
         runtime: plugin.runtime,
         entry: plugin.entry,
+        bundle_root: plugin.bundle_root,
     }
 }
 
@@ -1095,11 +1097,13 @@ mod tests {
                     plugin_id: "plugin.js".to_owned(),
                     runtime: RuntimeKind::JavaScript,
                     entry: "dist/plugin.js".to_owned(),
+                    bundle_root: None,
                 },
                 RuntimePluginSnapshot {
                     plugin_id: "plugin.wasm".to_owned(),
                     runtime: RuntimeKind::Wasm,
                     entry: "dist/plugin.wasm".to_owned(),
+                    bundle_root: None,
                 },
             ]
         );

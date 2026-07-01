@@ -3,8 +3,8 @@
 use async_trait::async_trait;
 
 use crate::{
-    PluginInvocation, PluginManifest, PluginOutput, RuntimeAdapter, RuntimeError, RuntimeHandle,
-    RuntimeKind,
+    PluginInvocation, PluginLoadRequest, PluginManifest, PluginOutput, RuntimeAdapter,
+    RuntimeError, RuntimeHandle, RuntimeKind,
 };
 
 /// Policy enforced before a plugin is loaded into a runtime engine.
@@ -124,12 +124,13 @@ impl<A> RuntimeAdapter for SandboxedRuntime<A>
 where
     A: RuntimeAdapter + Send + Sync,
 {
-    async fn load(&self, manifest: &PluginManifest) -> Result<RuntimeHandle, RuntimeError> {
+    async fn load(&self, request: &PluginLoadRequest) -> Result<RuntimeHandle, RuntimeError> {
+        let manifest = request.manifest();
         self.policy
             .validate(manifest)
             .map_err(|error| RuntimeError::Runtime(error.to_string()))?;
 
-        self.adapter.load(manifest).await
+        self.adapter.load(request).await
     }
 
     async fn invoke(
@@ -161,11 +162,11 @@ impl UnavailableRuntimeAdapter {
 
 #[async_trait]
 impl RuntimeAdapter for UnavailableRuntimeAdapter {
-    async fn load(&self, manifest: &PluginManifest) -> Result<RuntimeHandle, RuntimeError> {
+    async fn load(&self, request: &PluginLoadRequest) -> Result<RuntimeHandle, RuntimeError> {
         Err(RuntimeError::Runtime(format!(
             "{} runtime is not configured for plugin `{}`",
             runtime_name(self.runtime),
-            manifest.id
+            request.manifest().id
         )))
     }
 
@@ -202,7 +203,8 @@ mod tests {
 
     #[async_trait]
     impl RuntimeAdapter for RecordingRuntime {
-        async fn load(&self, manifest: &PluginManifest) -> Result<RuntimeHandle, RuntimeError> {
+        async fn load(&self, request: &PluginLoadRequest) -> Result<RuntimeHandle, RuntimeError> {
+            let manifest = request.manifest();
             Ok(RuntimeHandle::new(&manifest.id, manifest.runtime))
         }
 
@@ -239,7 +241,7 @@ mod tests {
         let runtime = SandboxedRuntime::new(RecordingRuntime, SandboxPolicy::default());
 
         let handle = runtime
-            .load(&manifest("1", RuntimeKind::Wasm))
+            .load(&PluginLoadRequest::new(manifest("1", RuntimeKind::Wasm)))
             .await
             .unwrap();
         let output = runtime
@@ -256,7 +258,7 @@ mod tests {
         let runtime = SandboxedRuntime::new(RecordingRuntime, SandboxPolicy::default());
 
         let error = runtime
-            .load(&manifest("2", RuntimeKind::Wasm))
+            .load(&PluginLoadRequest::new(manifest("2", RuntimeKind::Wasm)))
             .await
             .unwrap_err();
 
@@ -271,7 +273,10 @@ mod tests {
         let runtime = UnavailableRuntimeAdapter::new(RuntimeKind::JavaScript);
 
         let error = runtime
-            .load(&manifest("1", RuntimeKind::JavaScript))
+            .load(&PluginLoadRequest::new(manifest(
+                "1",
+                RuntimeKind::JavaScript,
+            )))
             .await
             .unwrap_err();
 

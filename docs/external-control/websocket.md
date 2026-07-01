@@ -280,7 +280,8 @@ Example result:
     {
       "pluginId": "dev.arcflow.example",
       "runtime": "wasm",
-      "entry": "dist/plugin.wasm"
+      "entry": "dist/plugin.wasm",
+      "bundleRoot": "/Users/me/ArcFlow/plugins/dev.arcflow.example"
     }
   ]
 }

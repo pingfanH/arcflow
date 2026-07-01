@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    PluginInvocation, PluginManifest, PluginOutput, PluginRegistry, PluginRegistryError,
-    RuntimeAdapter, RuntimeError, RuntimeHandle,
+    PluginInvocation, PluginLoadRequest, PluginManifest, PluginOutput, PluginRegistry,
+    PluginRegistryError, RuntimeAdapter, RuntimeError, RuntimeHandle,
 };
 
 /// Plugin host that coordinates the registry and runtime Adapter.
@@ -47,10 +47,22 @@ where
         Ok(())
     }
 
+    /// Installs a plugin manifest from a bundle root as disabled.
+    pub fn install_with_bundle_root(
+        &mut self,
+        manifest: PluginManifest,
+        bundle_root: impl Into<String>,
+    ) -> Result<(), PluginHostError> {
+        self.registry
+            .install_with_bundle_root(manifest, bundle_root)?;
+        Ok(())
+    }
+
     /// Enables and loads an installed plugin.
     pub async fn enable(&mut self, plugin_id: &str) -> Result<(), PluginHostError> {
-        let manifest = self.registry.get(plugin_id)?.manifest().clone();
-        let handle = self.adapter.load(&manifest).await?;
+        let record = self.registry.get(plugin_id)?;
+        let request = plugin_load_request_from_record(record);
+        let handle = self.adapter.load(&request).await?;
         self.registry.enable(plugin_id)?;
         self.handles.insert(plugin_id.to_owned(), handle);
         Ok(())
@@ -94,6 +106,15 @@ where
             .ok_or_else(|| RuntimeError::PluginNotLoaded(plugin_id.to_owned()))?;
 
         Ok(self.adapter.invoke(handle, invocation).await?)
+    }
+}
+
+fn plugin_load_request_from_record(record: &crate::PluginRecord) -> PluginLoadRequest {
+    match record.bundle_root() {
+        Some(bundle_root) => {
+            PluginLoadRequest::with_bundle_root(record.manifest().clone(), bundle_root)
+        }
+        None => PluginLoadRequest::new(record.manifest().clone()),
     }
 }
 
@@ -145,12 +166,18 @@ mod tests {
     #[derive(Debug, Default)]
     struct FakeRuntime {
         loaded: Mutex<Vec<String>>,
+        bundle_roots: Mutex<Vec<Option<String>>>,
     }
 
     #[async_trait]
     impl RuntimeAdapter for FakeRuntime {
-        async fn load(&self, manifest: &PluginManifest) -> Result<RuntimeHandle, RuntimeError> {
+        async fn load(&self, request: &PluginLoadRequest) -> Result<RuntimeHandle, RuntimeError> {
+            let manifest = request.manifest();
             self.loaded.lock().unwrap().push(manifest.id.clone());
+            self.bundle_roots
+                .lock()
+                .unwrap()
+                .push(request.bundle_root().map(str::to_owned));
             Ok(RuntimeHandle::new(&manifest.id, manifest.runtime))
         }
 
@@ -205,6 +232,20 @@ mod tests {
             "com.example.plugin.device.connected"
         );
         assert!(host.registry().get("com.example.plugin").unwrap().enabled());
+    }
+
+    #[tokio::test]
+    async fn enables_plugin_with_bundle_root() {
+        let mut host = PluginHost::new(FakeRuntime::default());
+        host.install_with_bundle_root(manifest(), "/plugins/com.example.plugin")
+            .unwrap();
+
+        host.enable("com.example.plugin").await.unwrap();
+
+        assert_eq!(
+            *host.adapter().bundle_roots.lock().unwrap(),
+            vec![Some("/plugins/com.example.plugin".to_owned())]
+        );
     }
 
     #[tokio::test]

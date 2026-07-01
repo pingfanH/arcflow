@@ -83,7 +83,12 @@ impl RecordingPluginRuntimeController {
             let plugin_id = manifest.id.clone();
 
             if self.host.registry().get(&plugin_id).is_err() {
-                self.host.install(manifest)?;
+                match record.bundle_root() {
+                    Some(bundle_root) => {
+                        self.host.install_with_bundle_root(manifest, bundle_root)?
+                    }
+                    None => self.host.install(manifest)?,
+                }
                 report.installed_plugin_ids.push(plugin_id.clone());
             }
 
@@ -309,6 +314,26 @@ mod tests {
                 .map(|plugin| plugin.plugin_id)
                 .collect::<Vec<_>>(),
             vec!["plugin.js", "plugin.wasm"]
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_preserves_bundle_roots_for_loaded_plugins() {
+        let mut registry = PluginRegistry::new();
+        registry
+            .install_with_bundle_root(
+                manifest("plugin.wasm", RuntimeKind::Wasm),
+                "/plugins/plugin.wasm",
+            )
+            .unwrap();
+        registry.enable("plugin.wasm").unwrap();
+        let mut controller = RecordingPluginRuntimeController::new();
+
+        controller.sync_from_registry(&registry).await.unwrap();
+
+        assert_eq!(
+            controller.loaded_plugins()[0].bundle_root,
+            Some("/plugins/plugin.wasm".to_owned())
         );
     }
 
