@@ -221,6 +221,21 @@ Returns active output device ids and BLE output worker counters.
 }
 ```
 
+### `runtime.events`
+
+Required capability: `device.read`
+
+Returns the recent in-memory runtime event log for script and BLE output worker
+events.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 9,
+  "method": "runtime.events"
+}
+```
+
 ### `plugin.registry`
 
 Required capability: `plugin.manage`
@@ -228,7 +243,7 @@ Required capability: `plugin.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 9,
+  "id": 10,
   "method": "plugin.registry"
 }
 ```
@@ -240,7 +255,7 @@ Required capability: `plugin.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 10,
+  "id": 11,
   "method": "plugin.installManifest",
   "params": {
     "manifestJson": "{\"id\":\"dev.arcflow.example\",\"name\":\"Example\",\"version\":\"0.1.0\",\"runtime\":\"wasm\",\"entry\":\"dist/plugin.wasm\",\"apiVersion\":\"1\",\"capabilities\":[\"device.read\"]}"
@@ -255,7 +270,7 @@ Required capability: `plugin.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 11,
+  "id": 12,
   "method": "plugin.setEnabled",
   "params": {
     "pluginId": "dev.arcflow.example",

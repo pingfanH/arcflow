@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -9,7 +10,7 @@ use arcflow_core::{
     CoreScriptActionExecutor, CoyoteV3OutputController, DeviceDiscoveryController, DeviceModel,
     DeviceOutputController, DeviceScanResult, DeviceStatus, PluginBundle, PluginRegistryEntry,
     PluginRegistryPersistence, SafetyLimits, ScriptDocumentEntry, ScriptDocumentPersistence,
-    ScriptWorkerQueue, StopOutputResult, StorageScriptRunner,
+    ScriptWorkerEvent, ScriptWorkerQueue, StopOutputResult, StorageScriptRunner,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
@@ -18,9 +19,12 @@ use arcflow_external_control::{
 use arcflow_plugin_runtime::Capability;
 use arcflow_script::ScriptCompiler;
 use arcflow_storage::Storage;
-use arcflow_tauri_platform::{TauriBleDiscoveryController, TauriBleOutputSink, TauriBleTransport};
+use arcflow_tauri_platform::{
+    TauriBleDiscoveryController, TauriBleOutputEvent, TauriBleOutputSink, TauriBleTransport,
+};
 use serde::Serialize;
 use tauri::Manager;
+use tokio::sync::mpsc;
 
 #[derive(Default)]
 struct ExternalControlState {
@@ -40,9 +44,58 @@ struct StorageState {
 struct RuntimeState {
     output_controller: Arc<CoyoteV3OutputController<TauriBleOutputSink>>,
     output_sink: TauriBleOutputSink,
+    events: RuntimeEventLog,
 }
 
 const RUNTIME_STATUS_METHOD: &str = "runtime.status";
+const RUNTIME_EVENTS_METHOD: &str = "runtime.events";
+const RUNTIME_EVENT_LIMIT: usize = 128;
+
+#[derive(Clone, Default)]
+struct RuntimeEventLog {
+    inner: Arc<Mutex<RuntimeEventLogInner>>,
+}
+
+#[derive(Default)]
+struct RuntimeEventLogInner {
+    next_sequence: u64,
+    events: VecDeque<RuntimeEventRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeEventRecord {
+    sequence: u64,
+    kind: String,
+    message: String,
+}
+
+impl RuntimeEventLog {
+    fn push(&self, kind: impl Into<String>, message: impl Into<String>) {
+        let mut inner = self.inner.lock().expect("runtime event log mutex poisoned");
+        let sequence = inner.next_sequence;
+        inner.next_sequence += 1;
+        inner.events.push_back(RuntimeEventRecord {
+            sequence,
+            kind: kind.into(),
+            message: message.into(),
+        });
+
+        while inner.events.len() > RUNTIME_EVENT_LIMIT {
+            inner.events.pop_front();
+        }
+    }
+
+    fn list(&self) -> Vec<RuntimeEventRecord> {
+        self.inner
+            .lock()
+            .expect("runtime event log mutex poisoned")
+            .events
+            .iter()
+            .cloned()
+            .collect()
+    }
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -103,6 +156,12 @@ struct RuntimeStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RuntimeEventsResponse {
+    events: Vec<RuntimeEventRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct PluginRegistryResponse {
     plugins: Vec<PluginRegistryEntry>,
 }
@@ -149,6 +208,11 @@ fn storage_status(state: tauri::State<'_, StorageState>) -> Result<StorageStatus
 #[tauri::command]
 fn runtime_status(state: tauri::State<'_, RuntimeState>) -> RuntimeStatus {
     runtime_status_from_state(&state)
+}
+
+#[tauri::command]
+fn runtime_events(state: tauri::State<'_, RuntimeState>) -> RuntimeEventsResponse {
+    runtime_events_from_state(&state)
 }
 
 #[tauri::command]
@@ -438,6 +502,15 @@ fn external_request_handler(
                 };
             }
 
+            if request.method == RUNTIME_EVENTS_METHOD {
+                let response = execute_runtime_events_external_request(&session, &runtime);
+
+                return match response {
+                    Ok(result) => JsonRpcResponse::ok(id, result),
+                    Err(error) => JsonRpcResponse::error(id, error),
+                };
+            }
+
             match core.execute_external_request(&session, &request).await {
                 Ok(result) => JsonRpcResponse::ok(id, result),
                 Err(error) => JsonRpcResponse::error(id, RpcError::new(-32000, error.to_string())),
@@ -446,24 +519,46 @@ fn external_request_handler(
     })
 }
 
+fn execute_runtime_events_external_request(
+    session: &ClientSession,
+    runtime: &RuntimeState,
+) -> Result<serde_json::Value, RpcError> {
+    if !session.has_capability(Capability::DeviceRead) {
+        return Err(runtime_read_capability_error(
+            session,
+            RUNTIME_EVENTS_METHOD,
+        ));
+    }
+
+    serde_json::to_value(runtime_events_from_state(runtime))
+        .map_err(|error| RpcError::new(-32000, error.to_string()))
+}
+
 fn execute_runtime_status_external_request(
     session: &ClientSession,
     runtime: &RuntimeState,
 ) -> Result<serde_json::Value, RpcError> {
     if !session.has_capability(Capability::DeviceRead) {
-        return Err(RpcError::new(
-            -32000,
-            format!(
-                "session `{}` is missing required capability `{}` for `{}`",
-                session.client_name(),
-                Capability::DeviceRead.as_str(),
-                RUNTIME_STATUS_METHOD
-            ),
+        return Err(runtime_read_capability_error(
+            session,
+            RUNTIME_STATUS_METHOD,
         ));
     }
 
     serde_json::to_value(runtime_status_from_state(runtime))
         .map_err(|error| RpcError::new(-32000, error.to_string()))
+}
+
+fn runtime_read_capability_error(session: &ClientSession, method: &str) -> RpcError {
+    RpcError::new(
+        -32000,
+        format!(
+            "session `{}` is missing required capability `{}` for `{}`",
+            session.client_name(),
+            Capability::DeviceRead.as_str(),
+            method
+        ),
+    )
 }
 
 fn runtime_status_from_state(runtime: &RuntimeState) -> RuntimeStatus {
@@ -480,6 +575,56 @@ fn runtime_status_from_state(runtime: &RuntimeState) -> RuntimeStatus {
         ble_output_written: stats.written,
         ble_output_failed: stats.failed,
     }
+}
+
+fn runtime_events_from_state(runtime: &RuntimeState) -> RuntimeEventsResponse {
+    RuntimeEventsResponse {
+        events: runtime.events.list(),
+    }
+}
+
+fn spawn_runtime_event_listeners(
+    events: RuntimeEventLog,
+    mut script_events: mpsc::UnboundedReceiver<ScriptWorkerEvent>,
+    mut output_events: mpsc::UnboundedReceiver<TauriBleOutputEvent>,
+) {
+    let script_log = events.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = script_events.recv().await {
+            match event {
+                ScriptWorkerEvent::Completed(report) => script_log.push(
+                    "script.completed",
+                    format!(
+                        "script `{}` completed {} steps",
+                        report.script_id,
+                        report.steps.len()
+                    ),
+                ),
+                ScriptWorkerEvent::Failed { script_id, error } => script_log.push(
+                    "script.failed",
+                    format!("script `{script_id}` failed: {error}"),
+                ),
+            }
+        }
+    });
+
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = output_events.recv().await {
+            match event {
+                TauriBleOutputEvent::Written {
+                    device_id,
+                    characteristic,
+                } => events.push(
+                    "ble.write",
+                    format!("device `{}` wrote {:?}", device_id.as_str(), characteristic),
+                ),
+                TauriBleOutputEvent::Failed { device_id, error } => events.push(
+                    "ble.write.failed",
+                    format!("device `{}` write failed: {error}", device_id.as_str()),
+                ),
+            }
+        }
+    });
 }
 
 fn device_scan_response(result: DeviceScanResult) -> DeviceScanResponse {
@@ -526,10 +671,14 @@ pub fn run() {
             let database_path = app_data_dir.join("arcflow.sqlite3");
             let storage = Arc::new(Mutex::new(Storage::open(&database_path)?));
             let safety_limits = SafetyLimits::conservative();
+            let events = RuntimeEventLog::default();
+            let (script_event_sender, script_events) = mpsc::unbounded_channel();
+            let (output_event_sender, output_events) = mpsc::unbounded_channel();
             let discovery_controller: Arc<dyn DeviceDiscoveryController> =
                 Arc::new(TauriBleDiscoveryController::unsupported());
             let ble_transport = Arc::new(TauriBleTransport::unsupported());
-            let output_sink = TauriBleOutputSink::spawn(ble_transport);
+            let output_sink =
+                TauriBleOutputSink::spawn_with_event_sink(ble_transport, output_event_sender);
             let output_controller = Arc::new(CoyoteV3OutputController::new(
                 safety_limits,
                 output_sink.clone(),
@@ -539,12 +688,16 @@ pub fn run() {
                 Arc::clone(&discovery_controller),
                 Arc::clone(&core_output_controller),
             );
-            let script_queue = ScriptWorkerQueue::spawn(Arc::new(script_actions));
+            let script_queue = ScriptWorkerQueue::spawn_with_event_sink(
+                Arc::new(script_actions),
+                script_event_sender,
+            );
             let script_runner = StorageScriptRunner::with_queue(
                 Arc::clone(&storage),
                 ScriptCompiler::default(),
                 Arc::new(script_queue),
             );
+            spawn_runtime_event_listeners(events.clone(), script_events, output_events);
 
             app.manage(StorageState {
                 storage,
@@ -553,6 +706,7 @@ pub fn run() {
             app.manage(RuntimeState {
                 output_controller,
                 output_sink,
+                events,
             });
             app.manage(CoreState {
                 core: ArcFlowCore::with_controllers(
@@ -570,6 +724,7 @@ pub fn run() {
             app_status,
             storage_status,
             runtime_status,
+            runtime_events,
             plugin_registry,
             install_plugin_manifest,
             install_plugin_bundle,
