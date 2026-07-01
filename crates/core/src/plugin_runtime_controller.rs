@@ -16,7 +16,9 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::{CoreError, DeviceOutputController, PluginApi, PluginHookInvoker};
+use crate::{
+    CoreError, DeviceDiscoveryController, DeviceOutputController, PluginApi, PluginHookInvoker,
+};
 
 /// Runtime router used by the current plugin runtime.
 pub type ArcFlowPluginRuntimeRouter =
@@ -260,11 +262,16 @@ impl RecordingPluginRuntimeHookInvoker {
     pub fn with_plugin_api(
         controller: Arc<AsyncMutex<RecordingPluginRuntimeController>>,
         storage: Arc<Mutex<Storage>>,
+        discovery_controller: Arc<dyn DeviceDiscoveryController>,
         output_controller: Arc<dyn DeviceOutputController>,
     ) -> Self {
         Self {
             controller,
-            action_handler: Some(PluginOutputActionHandler::new(storage, output_controller)),
+            action_handler: Some(PluginOutputActionHandler::new(
+                storage,
+                discovery_controller,
+                output_controller,
+            )),
         }
     }
 }
@@ -294,7 +301,7 @@ impl PluginHookInvoker for RecordingPluginRuntimeHookInvoker {
             .map_err(|error| CoreError::Script(error.to_string()))?;
 
         if let Some(action_handler) = &self.action_handler {
-            return action_handler.handle(&manifest, output);
+            return action_handler.handle(&manifest, output).await;
         }
 
         if output.actions.is_empty() {
@@ -310,31 +317,39 @@ impl PluginHookInvoker for RecordingPluginRuntimeHookInvoker {
 #[derive(Clone)]
 struct PluginOutputActionHandler {
     storage: Arc<Mutex<Storage>>,
+    discovery_controller: Arc<dyn DeviceDiscoveryController>,
     output_controller: Arc<dyn DeviceOutputController>,
 }
 
 impl PluginOutputActionHandler {
     fn new(
         storage: Arc<Mutex<Storage>>,
+        discovery_controller: Arc<dyn DeviceDiscoveryController>,
         output_controller: Arc<dyn DeviceOutputController>,
     ) -> Self {
         Self {
             storage,
+            discovery_controller,
             output_controller,
         }
     }
 
-    fn handle(&self, manifest: &PluginManifest, output: PluginOutput) -> Result<(), CoreError> {
+    async fn handle(
+        &self,
+        manifest: &PluginManifest,
+        output: PluginOutput,
+    ) -> Result<(), CoreError> {
         if output.actions.is_empty() {
             return Ok(());
         }
 
-        let storage = self
-            .storage
-            .lock()
-            .expect("plugin API storage mutex poisoned");
-        let api = PluginApi::with_output_controller(&storage, Arc::clone(&self.output_controller));
+        let api = PluginApi::with_host_controllers(
+            Arc::clone(&self.storage),
+            Arc::clone(&self.discovery_controller),
+            Arc::clone(&self.output_controller),
+        );
         api.handle_output(manifest, output)
+            .await
             .map(|_| ())
             .map_err(|error| CoreError::Script(error.to_string()))
     }
@@ -369,6 +384,22 @@ mod tests {
     use super::*;
 
     const MINIMAL_WASM_MODULE: &[u8] = b"\0asm\x01\0\0\0";
+
+    #[derive(Debug, Default)]
+    struct FakeDiscoveryController {
+        scan_count: Mutex<usize>,
+    }
+
+    #[async_trait]
+    impl DeviceDiscoveryController for FakeDiscoveryController {
+        async fn scan_devices(&self) -> Result<crate::DeviceScanResult, crate::CoreError> {
+            *self.scan_count.lock().unwrap() += 1;
+            Ok(crate::DeviceScanResult::new(
+                crate::BleAdapterStatus::Unsupported,
+                Vec::new(),
+            ))
+        }
+    }
 
     #[derive(Debug)]
     struct FakeOutputController {
@@ -419,14 +450,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn plugin_output_action_handler_routes_actions_through_plugin_api() {
+    #[tokio::test]
+    async fn plugin_output_action_handler_routes_actions_through_plugin_api() {
         let storage = Arc::new(Mutex::new(Storage::in_memory().unwrap()));
+        let discovery_controller: Arc<dyn DeviceDiscoveryController> =
+            Arc::new(FakeDiscoveryController::default());
         let output_controller = Arc::new(FakeOutputController {
             stop_count: Mutex::new(0),
         });
         let output: Arc<dyn DeviceOutputController> = output_controller.clone();
-        let handler = PluginOutputActionHandler::new(storage, output);
+        let handler = PluginOutputActionHandler::new(storage, discovery_controller, output);
         let manifest = manifest_with_capabilities(
             "plugin.wasm",
             RuntimeKind::Wasm,
@@ -441,9 +474,40 @@ mod tests {
                     json!({ "deviceId": "coyote-v3" }),
                 )]),
             )
+            .await
             .unwrap();
 
         assert_eq!(*output_controller.stop_count.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn plugin_output_action_handler_routes_device_status_actions_through_plugin_api() {
+        let storage = Arc::new(Mutex::new(Storage::in_memory().unwrap()));
+        let discovery = Arc::new(FakeDiscoveryController::default());
+        let discovery_controller: Arc<dyn DeviceDiscoveryController> = discovery.clone();
+        let output_controller: Arc<dyn DeviceOutputController> = Arc::new(FakeOutputController {
+            stop_count: Mutex::new(0),
+        });
+        let handler =
+            PluginOutputActionHandler::new(storage, discovery_controller, output_controller);
+        let manifest = manifest_with_capabilities(
+            "plugin.wasm",
+            RuntimeKind::Wasm,
+            vec![Capability::DeviceRead],
+        );
+
+        handler
+            .handle(
+                &manifest,
+                PluginOutput::new(vec![PluginAction::new(
+                    "device.status",
+                    json!({ "deviceId": "coyote-v3" }),
+                )]),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(*discovery.scan_count.lock().unwrap(), 1);
     }
 
     #[tokio::test]

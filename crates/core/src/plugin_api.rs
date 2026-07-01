@@ -1,27 +1,31 @@
 //! Host API exposed to sandboxed plugins through Rust Core.
 
 use core::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use arcflow_plugin_runtime::{Capability, PluginAction, PluginManifest, PluginOutput};
 use arcflow_storage::{Storage, StorageError};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::{DeviceId, DeviceOutputController};
+use crate::{
+    BleAdapterStatus, DeviceDiscoveryController, DeviceId, DeviceOutputController, DeviceStatus,
+};
 
 /// Core-owned plugin host API.
-pub struct PluginApi<'a> {
-    storage: &'a Storage,
+pub struct PluginApi {
+    storage: Arc<Mutex<Storage>>,
+    discovery_controller: Option<Arc<dyn DeviceDiscoveryController>>,
     output_controller: Option<Arc<dyn DeviceOutputController>>,
 }
 
-impl<'a> PluginApi<'a> {
+impl PluginApi {
     /// Constructs a plugin API over Core-owned storage.
     #[must_use]
-    pub fn new(storage: &'a Storage) -> Self {
+    pub fn new(storage: Arc<Mutex<Storage>>) -> Self {
         Self {
             storage,
+            discovery_controller: None,
             output_controller: None,
         }
     }
@@ -29,17 +33,45 @@ impl<'a> PluginApi<'a> {
     /// Constructs a plugin API over Core-owned storage and output control.
     #[must_use]
     pub fn with_output_controller(
-        storage: &'a Storage,
+        storage: Arc<Mutex<Storage>>,
         output_controller: Arc<dyn DeviceOutputController>,
     ) -> Self {
         Self {
             storage,
+            discovery_controller: None,
+            output_controller: Some(output_controller),
+        }
+    }
+
+    /// Constructs a plugin API over Core-owned storage and device discovery.
+    #[must_use]
+    pub fn with_discovery_controller(
+        storage: Arc<Mutex<Storage>>,
+        discovery_controller: Arc<dyn DeviceDiscoveryController>,
+    ) -> Self {
+        Self {
+            storage,
+            discovery_controller: Some(discovery_controller),
+            output_controller: None,
+        }
+    }
+
+    /// Constructs a plugin API over Core-owned storage and device controllers.
+    #[must_use]
+    pub fn with_host_controllers(
+        storage: Arc<Mutex<Storage>>,
+        discovery_controller: Arc<dyn DeviceDiscoveryController>,
+        output_controller: Arc<dyn DeviceOutputController>,
+    ) -> Self {
+        Self {
+            storage,
+            discovery_controller: Some(discovery_controller),
             output_controller: Some(output_controller),
         }
     }
 
     /// Handles one action requested by a sandboxed plugin.
-    pub fn handle_action(
+    pub async fn handle_action(
         &self,
         manifest: &PluginManifest,
         action: PluginAction,
@@ -49,22 +81,25 @@ impl<'a> PluginApi<'a> {
             "storage.private.get" => self.storage_get(manifest, action.params),
             "storage.private.delete" => self.storage_delete(manifest, action.params),
             "storage.private.keys" => self.storage_keys(manifest),
+            "device.status" => self.device_status(manifest, action.params).await,
             "wave.stop" => self.wave_stop(manifest, action.params),
             method => Err(PluginApiError::UnknownMethod(method.to_owned())),
         }
     }
 
     /// Handles every action returned by a plugin invocation in order.
-    pub fn handle_output(
+    pub async fn handle_output(
         &self,
         manifest: &PluginManifest,
         output: PluginOutput,
     ) -> Result<Vec<Value>, PluginApiError> {
-        output
-            .actions
-            .into_iter()
-            .map(|action| self.handle_action(manifest, action))
-            .collect()
+        let mut results = Vec::with_capacity(output.actions.len());
+
+        for action in output.actions {
+            results.push(self.handle_action(manifest, action).await?);
+        }
+
+        Ok(results)
     }
 
     fn storage_put(
@@ -77,7 +112,7 @@ impl<'a> PluginApi<'a> {
         let bytes = serde_json::to_vec(&params.value)
             .map_err(|error| PluginApiError::InvalidParams(error.to_string()))?;
 
-        self.storage
+        self.storage()?
             .plugin_kv()
             .put(&manifest.id, &params.key, &bytes)?;
 
@@ -95,7 +130,7 @@ impl<'a> PluginApi<'a> {
         ensure_capability(manifest, Capability::StoragePrivate)?;
         let params: StorageKeyParams = read_params("storage.private.get", params)?;
         let value = self
-            .storage
+            .storage()?
             .plugin_kv()
             .get(&manifest.id, &params.key)?
             .map(|bytes| serde_json::from_slice::<Value>(&bytes))
@@ -116,7 +151,9 @@ impl<'a> PluginApi<'a> {
         ensure_capability(manifest, Capability::StoragePrivate)?;
         let params: StorageKeyParams = read_params("storage.private.delete", params)?;
 
-        self.storage.plugin_kv().delete(&manifest.id, &params.key)?;
+        self.storage()?
+            .plugin_kv()
+            .delete(&manifest.id, &params.key)?;
 
         Ok(json!({
             "key": params.key,
@@ -126,11 +163,42 @@ impl<'a> PluginApi<'a> {
 
     fn storage_keys(&self, manifest: &PluginManifest) -> Result<Value, PluginApiError> {
         ensure_capability(manifest, Capability::StoragePrivate)?;
-        let keys = self.storage.plugin_kv().list_keys(&manifest.id)?;
+        let keys = self.storage()?.plugin_kv().list_keys(&manifest.id)?;
 
         Ok(json!({
             "keys": keys,
         }))
+    }
+
+    async fn device_status(
+        &self,
+        manifest: &PluginManifest,
+        params: Value,
+    ) -> Result<Value, PluginApiError> {
+        ensure_capability(manifest, Capability::DeviceRead)?;
+        let params: DeviceParams = read_params("device.status", params)?;
+        let discovery_controller = self
+            .discovery_controller
+            .as_ref()
+            .ok_or_else(|| PluginApiError::HostUnavailable("device.status".to_owned()))?;
+        let device_id = DeviceId::new(params.device_id);
+        let scan = discovery_controller
+            .scan_devices()
+            .await
+            .map_err(|error| PluginApiError::Host(error.to_string()))?;
+
+        match scan
+            .devices
+            .iter()
+            .find(|device| device.id.as_str() == device_id.as_str())
+        {
+            Some(device) => Ok(device_status_payload(device, scan.adapter_status)),
+            None => Ok(json!({
+                "deviceId": device_id.as_str(),
+                "connected": false,
+                "adapterStatus": scan.adapter_status.as_str(),
+            })),
+        }
     }
 
     fn wave_stop(&self, manifest: &PluginManifest, params: Value) -> Result<Value, PluginApiError> {
@@ -155,6 +223,12 @@ impl<'a> PluginApi<'a> {
             "deviceId": device_id.as_str(),
             "stopped": stopped,
         }))
+    }
+
+    fn storage(&self) -> Result<MutexGuard<'_, Storage>, PluginApiError> {
+        self.storage
+            .lock()
+            .map_err(|_| PluginApiError::Host("plugin storage mutex poisoned".to_owned()))
     }
 }
 
@@ -252,15 +326,48 @@ where
     })
 }
 
+fn device_status_payload(device: &DeviceStatus, adapter_status: BleAdapterStatus) -> Value {
+    json!({
+        "deviceId": device.id.as_str(),
+        "connected": device.connected,
+        "adapterStatus": adapter_status.as_str(),
+        "batteryPercent": device.battery_percent,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
     use arcflow_plugin_runtime::{PluginAction, RuntimeKind};
     use arcflow_storage::Storage;
+    use async_trait::async_trait;
     use serde_json::json;
 
     use super::*;
+
+    #[derive(Debug)]
+    struct FakeDiscoveryController {
+        scan: crate::DeviceScanResult,
+        scan_count: Mutex<usize>,
+    }
+
+    impl FakeDiscoveryController {
+        fn new(scan: crate::DeviceScanResult) -> Self {
+            Self {
+                scan,
+                scan_count: Mutex::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl DeviceDiscoveryController for FakeDiscoveryController {
+        async fn scan_devices(&self) -> Result<crate::DeviceScanResult, crate::CoreError> {
+            *self.scan_count.lock().unwrap() += 1;
+            Ok(self.scan.clone())
+        }
+    }
 
     #[derive(Debug)]
     struct FakeOutputController {
@@ -305,10 +412,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stores_and_reads_plugin_private_json() {
-        let storage = Storage::in_memory().unwrap();
-        let api = PluginApi::new(&storage);
+    fn in_memory_storage() -> Arc<Mutex<Storage>> {
+        Arc::new(Mutex::new(Storage::in_memory().unwrap()))
+    }
+
+    #[tokio::test]
+    async fn stores_and_reads_plugin_private_json() {
+        let storage = in_memory_storage();
+        let api = PluginApi::new(storage);
         let manifest = manifest_with(vec![Capability::StoragePrivate]);
 
         api.handle_action(
@@ -321,6 +432,7 @@ mod tests {
                 }),
             ),
         )
+        .await
         .unwrap();
 
         let result = api
@@ -328,6 +440,7 @@ mod tests {
                 &manifest,
                 PluginAction::new("storage.private.get", json!({ "key": "settings" })),
             )
+            .await
             .unwrap();
 
         assert_eq!(
@@ -339,21 +452,23 @@ mod tests {
         );
     }
 
-    #[test]
-    fn lists_and_deletes_plugin_private_keys() {
-        let storage = Storage::in_memory().unwrap();
-        let api = PluginApi::new(&storage);
+    #[tokio::test]
+    async fn lists_and_deletes_plugin_private_keys() {
+        let storage = in_memory_storage();
+        let api = PluginApi::new(storage);
         let manifest = manifest_with(vec![Capability::StoragePrivate]);
 
         api.handle_action(
             &manifest,
             PluginAction::new("storage.private.put", json!({ "key": "b", "value": 1 })),
         )
+        .await
         .unwrap();
         api.handle_action(
             &manifest,
             PluginAction::new("storage.private.put", json!({ "key": "a", "value": 2 })),
         )
+        .await
         .unwrap();
 
         let keys = api
@@ -361,6 +476,7 @@ mod tests {
                 &manifest,
                 PluginAction::new("storage.private.keys", json!({})),
             )
+            .await
             .unwrap();
 
         assert_eq!(keys, json!({ "keys": ["a", "b"] }));
@@ -369,6 +485,7 @@ mod tests {
             &manifest,
             PluginAction::new("storage.private.delete", json!({ "key": "a" })),
         )
+        .await
         .unwrap();
 
         let keys = api
@@ -376,15 +493,16 @@ mod tests {
                 &manifest,
                 PluginAction::new("storage.private.keys", json!({})),
             )
+            .await
             .unwrap();
 
         assert_eq!(keys, json!({ "keys": ["b"] }));
     }
 
-    #[test]
-    fn handles_plugin_output_actions_in_order() {
-        let storage = Storage::in_memory().unwrap();
-        let api = PluginApi::new(&storage);
+    #[tokio::test]
+    async fn handles_plugin_output_actions_in_order() {
+        let storage = in_memory_storage();
+        let api = PluginApi::new(storage);
         let manifest = manifest_with(vec![Capability::StoragePrivate]);
 
         let results = api
@@ -398,6 +516,7 @@ mod tests {
                     PluginAction::new("storage.private.get", json!({ "key": "theme" })),
                 ]),
             )
+            .await
             .unwrap();
 
         assert_eq!(
@@ -409,10 +528,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rejects_storage_without_capability() {
-        let storage = Storage::in_memory().unwrap();
-        let api = PluginApi::new(&storage);
+    #[tokio::test]
+    async fn rejects_storage_without_capability() {
+        let storage = in_memory_storage();
+        let api = PluginApi::new(storage);
         let manifest = manifest_with(vec![Capability::DeviceRead]);
 
         let error = api
@@ -420,6 +539,7 @@ mod tests {
                 &manifest,
                 PluginAction::new("storage.private.keys", json!({})),
             )
+            .await
             .unwrap_err();
 
         assert_eq!(
@@ -431,12 +551,125 @@ mod tests {
         );
     }
 
-    #[test]
-    fn stops_wave_through_output_controller() {
-        let storage = Storage::in_memory().unwrap();
+    #[tokio::test]
+    async fn reads_device_status_through_discovery_controller() {
+        let storage = in_memory_storage();
+        let discovery = Arc::new(FakeDiscoveryController::new(crate::DeviceScanResult::new(
+            BleAdapterStatus::Ready,
+            vec![DeviceStatus {
+                id: DeviceId::new("coyote-v3"),
+                model: crate::DeviceModel::CoyoteV3,
+                battery_percent: Some(87),
+                connected: true,
+            }],
+        )));
+        let discovery_controller: Arc<dyn DeviceDiscoveryController> = discovery.clone();
+        let api = PluginApi::with_discovery_controller(storage, discovery_controller);
+        let manifest = manifest_with(vec![Capability::DeviceRead]);
+
+        let result = api
+            .handle_action(
+                &manifest,
+                PluginAction::new("device.status", json!({ "deviceId": "coyote-v3" })),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            json!({
+                "deviceId": "coyote-v3",
+                "connected": true,
+                "adapterStatus": "ready",
+                "batteryPercent": 87,
+            })
+        );
+        assert_eq!(*discovery.scan_count.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn reports_disconnected_device_status_when_scan_misses_device() {
+        let storage = in_memory_storage();
+        let discovery_controller: Arc<dyn DeviceDiscoveryController> =
+            Arc::new(FakeDiscoveryController::new(crate::DeviceScanResult::new(
+                BleAdapterStatus::PoweredOff,
+                Vec::new(),
+            )));
+        let api = PluginApi::with_discovery_controller(storage, discovery_controller);
+        let manifest = manifest_with(vec![Capability::DeviceRead]);
+
+        let result = api
+            .handle_action(
+                &manifest,
+                PluginAction::new("device.status", json!({ "deviceId": "coyote-v3" })),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            json!({
+                "deviceId": "coyote-v3",
+                "connected": false,
+                "adapterStatus": "poweredOff",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_device_status_without_capability() {
+        let storage = in_memory_storage();
+        let discovery_controller: Arc<dyn DeviceDiscoveryController> =
+            Arc::new(FakeDiscoveryController::new(crate::DeviceScanResult::new(
+                BleAdapterStatus::Ready,
+                Vec::new(),
+            )));
+        let api = PluginApi::with_discovery_controller(storage, discovery_controller);
+        let manifest = manifest_with(vec![Capability::WaveControl]);
+
+        let error = api
+            .handle_action(
+                &manifest,
+                PluginAction::new("device.status", json!({ "deviceId": "coyote-v3" })),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            PluginApiError::CapabilityDenied {
+                plugin_id: "com.example.plugin".to_owned(),
+                capability: Capability::DeviceRead,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_device_status_without_discovery_controller() {
+        let storage = in_memory_storage();
+        let api = PluginApi::new(storage);
+        let manifest = manifest_with(vec![Capability::DeviceRead]);
+
+        let error = api
+            .handle_action(
+                &manifest,
+                PluginAction::new("device.status", json!({ "deviceId": "coyote-v3" })),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            PluginApiError::HostUnavailable("device.status".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn stops_wave_through_output_controller() {
+        let storage = in_memory_storage();
         let controller = Arc::new(FakeOutputController::new(vec![DeviceId::new("coyote-v3")]));
         let output_controller: Arc<dyn DeviceOutputController> = controller.clone();
-        let api = PluginApi::with_output_controller(&storage, output_controller);
+        let api = PluginApi::with_output_controller(storage, output_controller);
         let manifest = manifest_with(vec![Capability::WaveControl]);
 
         let result = api
@@ -444,6 +677,7 @@ mod tests {
                 &manifest,
                 PluginAction::new("wave.stop", json!({ "deviceId": "coyote-v3" })),
             )
+            .await
             .unwrap();
 
         assert_eq!(
@@ -458,12 +692,12 @@ mod tests {
         assert_eq!(*controller.stop_count.lock().unwrap(), 1);
     }
 
-    #[test]
-    fn rejects_wave_stop_without_capability() {
-        let storage = Storage::in_memory().unwrap();
+    #[tokio::test]
+    async fn rejects_wave_stop_without_capability() {
+        let storage = in_memory_storage();
         let controller = Arc::new(FakeOutputController::new(vec![DeviceId::new("coyote-v3")]));
         let output_controller: Arc<dyn DeviceOutputController> = controller;
-        let api = PluginApi::with_output_controller(&storage, output_controller);
+        let api = PluginApi::with_output_controller(storage, output_controller);
         let manifest = manifest_with(vec![Capability::DeviceRead]);
 
         let error = api
@@ -471,6 +705,7 @@ mod tests {
                 &manifest,
                 PluginAction::new("wave.stop", json!({ "deviceId": "coyote-v3" })),
             )
+            .await
             .unwrap_err();
 
         assert_eq!(
@@ -482,10 +717,10 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rejects_wave_stop_without_output_controller() {
-        let storage = Storage::in_memory().unwrap();
-        let api = PluginApi::new(&storage);
+    #[tokio::test]
+    async fn rejects_wave_stop_without_output_controller() {
+        let storage = in_memory_storage();
+        let api = PluginApi::new(storage);
         let manifest = manifest_with(vec![Capability::WaveControl]);
 
         let error = api
@@ -493,6 +728,7 @@ mod tests {
                 &manifest,
                 PluginAction::new("wave.stop", json!({ "deviceId": "coyote-v3" })),
             )
+            .await
             .unwrap_err();
 
         assert_eq!(

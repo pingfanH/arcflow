@@ -1560,6 +1560,7 @@ where
             let plugin_hook_invoker = Arc::new(RecordingPluginRuntimeHookInvoker::with_plugin_api(
                 Arc::clone(&plugin_runtime_controller),
                 Arc::clone(&storage),
+                Arc::clone(&discovery_controller),
                 Arc::clone(&core_output_controller),
             ));
             let script_actions = CoreScriptActionExecutor::with_plugin_hooks(

@@ -51,11 +51,14 @@ Plugins return a `PluginOutput` envelope:
 Each action is routed through Rust Core's Plugin API. The API checks the
 plugin's declared manifest capabilities before it performs any host operation.
 Plugins never call Bluetooth, SQLite, files, or platform APIs directly.
+Device actions may be asynchronous because they go through Core-owned discovery
+and BLE state.
 
 Current host actions:
 
 | Method | Required capability | Purpose |
 | --- | --- | --- |
+| `device.status` | `device.read` | Read one device's status through Core-owned device discovery. |
 | `storage.private.put` | `storage.private` | Store plugin-private JSON. |
 | `storage.private.get` | `storage.private` | Read plugin-private JSON. |
 | `storage.private.delete` | `storage.private` | Delete one plugin-private key. |
