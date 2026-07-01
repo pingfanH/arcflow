@@ -8,12 +8,13 @@ use arcflow_core::{
     execute_plugin_registry_external_request, execute_script_documents_external_request,
     is_plugin_registry_external_request, is_plugin_registry_mutation_external_request,
     is_script_documents_external_request, ArcFlowCore, CoreScriptActionExecutor,
-    CoyoteV3OutputController, CoyoteV3OutputRequest, CoyoteV3SequenceAllocator,
-    DeviceDiscoveryController, DeviceId, DeviceModel, DeviceOutputController, DeviceScanResult,
-    DeviceStatus, PluginBundle, PluginRegistryEntry, PluginRegistryPersistence,
-    PluginRuntimeSyncReport, RecordingPluginRuntimeController, RecordingPluginRuntimeHookInvoker,
-    SafetyLimits, ScriptDocumentEntry, ScriptDocumentPersistence, ScriptWorkerEvent,
-    ScriptWorkerQueue, StopOutputResult, StorageScriptRunner, SubmitOutputResult,
+    CoyoteV3OutputController, CoyoteV3OutputRequest, CoyoteV3PreviewSession,
+    CoyoteV3SequenceAllocator, DeviceDiscoveryController, DeviceId, DeviceModel,
+    DeviceOutputController, DeviceScanResult, DeviceStatus, PluginBundle, PluginRegistryEntry,
+    PluginRegistryPersistence, PluginRuntimeSyncReport, RecordingPluginRuntimeController,
+    RecordingPluginRuntimeHookInvoker, SafetyLimits, ScriptDocumentEntry,
+    ScriptDocumentPersistence, ScriptWorkerEvent, ScriptWorkerQueue, StopOutputResult,
+    StorageScriptRunner, SubmitOutputResult, COYOTE_V3_PREVIEW_INTERVAL_MS,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, ServerEvent,
@@ -28,7 +29,10 @@ use arcflow_tauri_platform::{
 };
 use serde::Serialize;
 use tauri::Manager;
-use tokio::sync::{broadcast, mpsc, Mutex as AsyncMutex};
+use tokio::{
+    sync::{broadcast, mpsc, oneshot, Mutex as AsyncMutex},
+    time::{sleep, Duration},
+};
 
 #[derive(Default)]
 struct ExternalControlState {
@@ -39,6 +43,25 @@ struct RunningExternalControl {
     handle: WsGatewayHandle,
     control_mode: bool,
     allowed_capabilities: Vec<Capability>,
+}
+
+#[derive(Clone, Default)]
+struct PreviewPlaybackState {
+    inner: Arc<Mutex<PreviewPlaybackInner>>,
+}
+
+#[derive(Default)]
+struct PreviewPlaybackInner {
+    next_id: u64,
+    running: Option<RunningPreviewPlayback>,
+}
+
+struct RunningPreviewPlayback {
+    id: u64,
+    device_id: DeviceId,
+    channel_a_strength: u8,
+    channel_b_strength: u8,
+    stop_sender: Option<oneshot::Sender<()>>,
 }
 
 struct CoreState {
@@ -214,6 +237,16 @@ struct SubmitWaveWindowResponse {
     device_id: String,
     sequence: u8,
     accepted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewPlaybackStatus {
+    running: bool,
+    device_id: Option<String>,
+    channel_a_strength: u8,
+    channel_b_strength: u8,
+    interval_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -506,7 +539,103 @@ async fn scan_devices(
 }
 
 #[tauri::command]
-fn stop_output(state: tauri::State<'_, CoreState>) -> Result<StopOutputResponse, String> {
+fn preview_playback_status(state: tauri::State<'_, PreviewPlaybackState>) -> PreviewPlaybackStatus {
+    preview_playback_status_from_state(&state)
+}
+
+#[tauri::command]
+fn start_preview_playback(
+    device_id: String,
+    channel_a_strength: u8,
+    channel_b_strength: u8,
+    state: tauri::State<'_, CoreState>,
+    runtime_state: tauri::State<'_, RuntimeState>,
+    preview_state: tauri::State<'_, PreviewPlaybackState>,
+) -> Result<PreviewPlaybackStatus, String> {
+    let session = CoyoteV3PreviewSession::new(
+        DeviceId::new(device_id),
+        channel_a_strength,
+        channel_b_strength,
+    )
+    .map_err(|error| error.to_string())?;
+
+    if !state
+        .core
+        .active_output_devices()
+        .contains(session.device_id())
+    {
+        return Err(format!(
+            "device `{}` is not connected",
+            session.device_id().as_str()
+        ));
+    }
+
+    let (id, stop_receiver) = {
+        let mut inner = preview_state
+            .inner
+            .lock()
+            .expect("preview playback state mutex poisoned");
+
+        if let Some(running) = inner.running.as_ref() {
+            return Ok(preview_playback_status_from_running(running));
+        }
+
+        let id = inner.next_id;
+        inner.next_id = inner.next_id.wrapping_add(1);
+        let (stop_sender, stop_receiver) = oneshot::channel();
+        inner.running = Some(RunningPreviewPlayback {
+            id,
+            device_id: session.device_id().clone(),
+            channel_a_strength: session.channel_a_strength(),
+            channel_b_strength: session.channel_b_strength(),
+            stop_sender: Some(stop_sender),
+        });
+
+        (id, stop_receiver)
+    };
+
+    runtime_state.events.push(
+        "wave.preview.started",
+        format!(
+            "preview playback started for `{}`",
+            session.device_id().as_str()
+        ),
+    );
+    spawn_preview_playback_loop(
+        id,
+        session,
+        state.core.clone(),
+        runtime_state.inner().clone(),
+        preview_state.inner.clone(),
+        stop_receiver,
+    );
+
+    Ok(preview_playback_status_from_state(&preview_state))
+}
+
+#[tauri::command]
+fn stop_preview_playback(
+    state: tauri::State<'_, CoreState>,
+    runtime_state: tauri::State<'_, RuntimeState>,
+    preview_state: tauri::State<'_, PreviewPlaybackState>,
+) -> Result<PreviewPlaybackStatus, String> {
+    cancel_preview_playback(&preview_state, &runtime_state.events);
+    state
+        .core
+        .stop_all_output()
+        .map_err(|error| error.to_string())?;
+
+    Ok(preview_playback_status_from_state(&preview_state))
+}
+
+#[tauri::command]
+fn stop_output(
+    state: tauri::State<'_, CoreState>,
+    runtime_state: tauri::State<'_, RuntimeState>,
+    preview_state: tauri::State<'_, PreviewPlaybackState>,
+) -> Result<StopOutputResponse, String> {
+    cancel_preview_playback(&preview_state, &runtime_state.events);
+
     state
         .core
         .stop_all_output()
@@ -886,6 +1015,134 @@ fn plugin_manage_capability_error(session: &ClientSession, method: &str) -> RpcE
     )
 }
 
+fn spawn_preview_playback_loop(
+    id: u64,
+    session: CoyoteV3PreviewSession,
+    core: ArcFlowCore,
+    runtime: RuntimeState,
+    preview_inner: Arc<Mutex<PreviewPlaybackInner>>,
+    mut stop_receiver: oneshot::Receiver<()>,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            let request = {
+                let mut sequences = runtime
+                    .preview_sequences
+                    .lock()
+                    .expect("preview sequence allocator mutex poisoned");
+                session.next_request(&mut sequences)
+            };
+
+            let request = match request {
+                Ok(request) => request,
+                Err(error) => {
+                    runtime.events.push(
+                        "wave.preview.failed",
+                        format!(
+                            "preview playback for `{}` failed: {error}",
+                            session.device_id().as_str()
+                        ),
+                    );
+                    clear_preview_playback_if_current(&preview_inner, id);
+                    break;
+                }
+            };
+
+            if let Err(error) = core.submit_coyote_v3_window(request) {
+                runtime.events.push(
+                    "wave.preview.failed",
+                    format!(
+                        "preview playback for `{}` failed: {error}",
+                        session.device_id().as_str()
+                    ),
+                );
+                clear_preview_playback_if_current(&preview_inner, id);
+                break;
+            }
+
+            tokio::select! {
+                _ = &mut stop_receiver => {
+                    break;
+                }
+                () = sleep(Duration::from_millis(COYOTE_V3_PREVIEW_INTERVAL_MS)) => {}
+            }
+        }
+    });
+}
+
+fn cancel_preview_playback(state: &PreviewPlaybackState, events: &RuntimeEventLog) {
+    let running = state
+        .inner
+        .lock()
+        .expect("preview playback state mutex poisoned")
+        .running
+        .take();
+
+    if let Some(mut running) = running {
+        if let Some(stop_sender) = running.stop_sender.take() {
+            let _ = stop_sender.send(());
+        }
+
+        events.push(
+            "wave.preview.stopped",
+            format!(
+                "preview playback stopped for `{}`",
+                running.device_id.as_str()
+            ),
+        );
+    }
+}
+
+fn clear_preview_playback_if_current(
+    state: &Arc<Mutex<PreviewPlaybackInner>>,
+    id: u64,
+) -> Option<RunningPreviewPlayback> {
+    let mut inner = state.lock().expect("preview playback state mutex poisoned");
+
+    if inner
+        .running
+        .as_ref()
+        .is_some_and(|running| running.id == id)
+    {
+        inner.running.take()
+    } else {
+        None
+    }
+}
+
+fn preview_playback_status_from_state(state: &PreviewPlaybackState) -> PreviewPlaybackStatus {
+    let inner = state
+        .inner
+        .lock()
+        .expect("preview playback state mutex poisoned");
+
+    inner
+        .running
+        .as_ref()
+        .map(preview_playback_status_from_running)
+        .unwrap_or_else(stopped_preview_playback_status)
+}
+
+fn preview_playback_status_from_running(running: &RunningPreviewPlayback) -> PreviewPlaybackStatus {
+    PreviewPlaybackStatus {
+        running: true,
+        device_id: Some(running.device_id.as_str().to_owned()),
+        channel_a_strength: running.channel_a_strength,
+        channel_b_strength: running.channel_b_strength,
+        interval_ms: COYOTE_V3_PREVIEW_INTERVAL_MS,
+    }
+}
+
+fn stopped_preview_playback_status() -> PreviewPlaybackStatus {
+    PreviewPlaybackStatus {
+        running: false,
+        device_id: None,
+        channel_a_strength: 0,
+        channel_b_strength: 0,
+        interval_ms: COYOTE_V3_PREVIEW_INTERVAL_MS,
+    }
+}
+
 fn runtime_status_from_state(runtime: &RuntimeState, loaded_plugin_count: usize) -> RuntimeStatus {
     let stats = runtime.output_sink.stats();
 
@@ -1205,6 +1462,7 @@ where
             Ok(())
         })
         .manage(ExternalControlState::default())
+        .manage(PreviewPlaybackState::default())
         .invoke_handler(tauri::generate_handler![
             app_status,
             frontend_platform,
@@ -1226,6 +1484,9 @@ where
             activate_output_device,
             deactivate_output_device,
             submit_preview_window,
+            preview_playback_status,
+            start_preview_playback,
+            stop_preview_playback,
             external_control_status,
             start_external_control,
             stop_external_control
@@ -1413,6 +1674,101 @@ mod tests {
                 sequence: 7,
                 accepted: true,
             }
+        );
+    }
+
+    #[test]
+    fn preview_playback_status_defaults_to_stopped() {
+        let state = PreviewPlaybackState::default();
+
+        assert_eq!(
+            preview_playback_status_from_state(&state),
+            PreviewPlaybackStatus {
+                running: false,
+                device_id: None,
+                channel_a_strength: 0,
+                channel_b_strength: 0,
+                interval_ms: COYOTE_V3_PREVIEW_INTERVAL_MS,
+            }
+        );
+    }
+
+    #[test]
+    fn preview_playback_status_reports_running_session() {
+        let state = PreviewPlaybackState::default();
+        let (stop_sender, _stop_receiver) = oneshot::channel();
+        let running = RunningPreviewPlayback {
+            id: 3,
+            device_id: DeviceId::new("coyote-v3"),
+            channel_a_strength: 12,
+            channel_b_strength: 4,
+            stop_sender: Some(stop_sender),
+        };
+        state
+            .inner
+            .lock()
+            .expect("preview playback state mutex poisoned")
+            .running = Some(running);
+
+        assert_eq!(
+            preview_playback_status_from_state(&state),
+            PreviewPlaybackStatus {
+                running: true,
+                device_id: Some("coyote-v3".to_owned()),
+                channel_a_strength: 12,
+                channel_b_strength: 4,
+                interval_ms: COYOTE_V3_PREVIEW_INTERVAL_MS,
+            }
+        );
+    }
+
+    #[test]
+    fn cancel_preview_playback_clears_running_session_and_logs_event() {
+        let state = PreviewPlaybackState::default();
+        let events = RuntimeEventLog::default();
+        let (stop_sender, _stop_receiver) = oneshot::channel();
+        let running = RunningPreviewPlayback {
+            id: 4,
+            device_id: DeviceId::new("coyote-v3"),
+            channel_a_strength: 10,
+            channel_b_strength: 0,
+            stop_sender: Some(stop_sender),
+        };
+        state
+            .inner
+            .lock()
+            .expect("preview playback state mutex poisoned")
+            .running = Some(running);
+
+        cancel_preview_playback(&state, &events);
+
+        assert!(!preview_playback_status_from_state(&state).running);
+        assert_eq!(events.list()[0].kind, "wave.preview.stopped");
+    }
+
+    #[test]
+    fn stale_preview_loop_cannot_clear_new_running_session() {
+        let state = PreviewPlaybackState::default();
+        let (stop_sender, _stop_receiver) = oneshot::channel();
+        let running = RunningPreviewPlayback {
+            id: 8,
+            device_id: DeviceId::new("new-session"),
+            channel_a_strength: 10,
+            channel_b_strength: 0,
+            stop_sender: Some(stop_sender),
+        };
+        state
+            .inner
+            .lock()
+            .expect("preview playback state mutex poisoned")
+            .running = Some(running);
+
+        let cleared = clear_preview_playback_if_current(&state.inner, 7);
+
+        assert!(cleared.is_none());
+        assert_eq!(
+            preview_playback_status_from_state(&state).device_id,
+            Some("new-session".to_owned())
         );
     }
 

@@ -9,6 +9,8 @@ use crate::CoreError;
 
 const PREVIEW_WAVE_PERIOD_MS: u16 = 10;
 const PREVIEW_WAVE_STRENGTHS: [u8; 4] = [0, 10, 20, 30];
+/// Interval between generated Coyote V3 preview windows.
+pub const COYOTE_V3_PREVIEW_INTERVAL_MS: u64 = 100;
 
 /// Stable ArcFlow device identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -189,6 +191,69 @@ impl CoyoteV3SequenceAllocator {
     }
 }
 
+/// Core-owned state for generating a repeating Coyote V3 preview stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoyoteV3PreviewSession {
+    device_id: DeviceId,
+    channel_a_strength: u8,
+    channel_b_strength: u8,
+}
+
+impl CoyoteV3PreviewSession {
+    /// Constructs a preview session for one active Coyote V3 output device.
+    pub fn new(
+        device_id: DeviceId,
+        channel_a_strength: u8,
+        channel_b_strength: u8,
+    ) -> Result<Self, CoreError> {
+        CoyoteV3OutputRequest::preview(
+            device_id.clone(),
+            0,
+            channel_a_strength,
+            channel_b_strength,
+        )?;
+
+        Ok(Self {
+            device_id,
+            channel_a_strength,
+            channel_b_strength,
+        })
+    }
+
+    /// Returns the target device id.
+    #[must_use]
+    pub fn device_id(&self) -> &DeviceId {
+        &self.device_id
+    }
+
+    /// Returns the channel A strength used for generated preview windows.
+    #[must_use]
+    pub fn channel_a_strength(&self) -> u8 {
+        self.channel_a_strength
+    }
+
+    /// Returns the channel B strength used for generated preview windows.
+    #[must_use]
+    pub fn channel_b_strength(&self) -> u8 {
+        self.channel_b_strength
+    }
+
+    /// Builds the next preview output request using the shared sequence allocator.
+    pub fn next_request(
+        &self,
+        sequences: &mut CoyoteV3SequenceAllocator,
+    ) -> Result<CoyoteV3OutputRequest, CoreError> {
+        let sequence = sequences.next(&self.device_id);
+
+        CoyoteV3OutputRequest::preview(
+            self.device_id.clone(),
+            sequence,
+            self.channel_a_strength,
+            self.channel_b_strength,
+        )
+    }
+}
+
 fn preview_channel_output(channel_strength: u8) -> Result<ChannelOutput, CoreError> {
     if channel_strength == 0 {
         return Ok(ChannelOutput::Disabled);
@@ -261,5 +326,24 @@ mod tests {
         assert_eq!(allocator.next(&first), 1);
         assert_eq!(allocator.next(&second), 0);
         assert_eq!(allocator.next(&first), 2);
+    }
+
+    #[test]
+    fn preview_session_allocates_next_request_sequences() {
+        let session =
+            CoyoteV3PreviewSession::new(DeviceId::new("coyote-v3"), 7, 2).expect("preview session");
+        let mut allocator = CoyoteV3SequenceAllocator::default();
+
+        let first = session.next_request(&mut allocator).expect("first request");
+        let second = session
+            .next_request(&mut allocator)
+            .expect("second request");
+
+        assert_eq!(session.device_id(), &DeviceId::new("coyote-v3"));
+        assert_eq!(session.channel_a_strength(), 7);
+        assert_eq!(session.channel_b_strength(), 2);
+        assert_eq!(first.sequence, 0);
+        assert_eq!(second.sequence, 1);
+        assert_eq!(second.device_id, DeviceId::new("coyote-v3"));
     }
 }

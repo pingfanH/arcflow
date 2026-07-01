@@ -67,10 +67,12 @@ type OutputDeviceActivationResponse = {
   activeOutputDevices: string[];
 };
 
-type SubmitWaveWindowResponse = {
-  deviceId: string;
-  sequence: number;
-  accepted: boolean;
+type PreviewPlaybackStatus = {
+  running: boolean;
+  deviceId: string | null;
+  channelAStrength: number;
+  channelBStrength: number;
+  intervalMs: number;
 };
 
 type StorageStatus = {
@@ -205,6 +207,14 @@ const emptyRuntimeEvents: RuntimeEventsResponse = {
   events: [],
 };
 
+const stoppedPreviewPlayback: PreviewPlaybackStatus = {
+  running: false,
+  deviceId: null,
+  channelAStrength: 0,
+  channelBStrength: 0,
+  intervalMs: 100,
+};
+
 const emptyPluginRegistry: PluginRegistryResponse = {
   plugins: [],
 };
@@ -278,6 +288,8 @@ function App() {
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
   const [runtimeEvents, setRuntimeEvents] = useState<RuntimeEventsResponse | null>(null);
+  const [previewStatus, setPreviewStatus] =
+    useState<PreviewPlaybackStatus>(stoppedPreviewPlayback);
   const [pluginRegistry, setPluginRegistry] = useState<PluginRegistryResponse | null>(null);
   const [scripts, setScripts] = useState<ScriptsResponse | null>(null);
   const [lastScriptRun, setLastScriptRun] = useState<ScriptRunResponse | null>(null);
@@ -291,7 +303,6 @@ function App() {
   const [pluginError, setPluginError] = useState<string | null>(null);
   const [scriptBusy, setScriptBusy] = useState(false);
   const [deviceOnline, setDeviceOnline] = useState(false);
-  const [playing, setPlaying] = useState(false);
   const [channelA, setChannelA] = useState(12);
   const [channelB, setChannelB] = useState(0);
   const frontendPlatform = useFrontendPlatform();
@@ -321,6 +332,12 @@ function App() {
       .catch(() => setRuntimeEvents(emptyRuntimeEvents));
   }, []);
 
+  const refreshPreviewPlayback = useCallback(() => {
+    invoke<PreviewPlaybackStatus>("preview_playback_status")
+      .then(setPreviewStatus)
+      .catch(() => setPreviewStatus(stoppedPreviewPlayback));
+  }, []);
+
   const refreshScripts = useCallback(() => {
     invoke<ScriptsResponse>("list_scripts")
       .then(setScripts)
@@ -345,10 +362,12 @@ function App() {
       .catch(() => setStorageStatus(fallbackStorageStatus));
     refreshRuntimeStatus();
     refreshRuntimeEvents();
+    refreshPreviewPlayback();
     refreshPluginRegistry();
     refreshScripts();
   }, [
     refreshExternalStatus,
+    refreshPreviewPlayback,
     refreshPluginRegistry,
     refreshRuntimeEvents,
     refreshRuntimeStatus,
@@ -416,37 +435,54 @@ function App() {
     setStopBusy(true);
     invoke<StopOutputResponse>("stop_output")
       .then(() => {
-        setPlaying(false);
+        setPreviewStatus(stoppedPreviewPlayback);
         setWaveError(null);
         refreshRuntimeStatus();
         refreshRuntimeEvents();
       })
-      .catch(() => setPlaying(false))
+      .catch(() => setPreviewStatus(stoppedPreviewPlayback))
       .finally(() => setStopBusy(false));
   };
 
-  const playPreviewWindow = () => {
+  const startPreviewPlayback = () => {
     const deviceId = activeOutputDeviceIds[0];
     if (!deviceId) {
       setWaveError("No active output device");
-      setPlaying(false);
+      setPreviewStatus(stoppedPreviewPlayback);
       return;
     }
 
     setWaveBusy(true);
-    invoke<SubmitWaveWindowResponse>("submit_preview_window", {
+    invoke<PreviewPlaybackStatus>("start_preview_playback", {
       deviceId,
       channelAStrength: channelA,
       channelBStrength: channelB,
     })
       .then((result) => {
-        setPlaying(result.accepted);
+        setPreviewStatus(result);
         setWaveError(null);
         refreshRuntimeStatus();
         refreshRuntimeEvents();
       })
       .catch((error) => {
-        setPlaying(false);
+        setPreviewStatus(stoppedPreviewPlayback);
+        setWaveError(errorMessage(error));
+        refreshRuntimeStatus();
+      })
+      .finally(() => setWaveBusy(false));
+  };
+
+  const stopPreviewPlayback = () => {
+    setWaveBusy(true);
+    invoke<PreviewPlaybackStatus>("stop_preview_playback")
+      .then((result) => {
+        setPreviewStatus(result);
+        setWaveError(null);
+        refreshRuntimeStatus();
+        refreshRuntimeEvents();
+      })
+      .catch((error) => {
+        setPreviewStatus(stoppedPreviewPlayback);
         setWaveError(errorMessage(error));
         refreshRuntimeStatus();
       })
@@ -561,6 +597,7 @@ function App() {
   );
   const connectedDeviceCount = lastScan?.devices.filter((device) => device.connected).length ?? 0;
   const activeOutputDeviceIds = runtimeStatus?.activeOutputDevices ?? [];
+  const playing = previewStatus.running;
   const deviceSubtitle = useMemo(() => {
     if (connectedDeviceCount > 0) {
       return connectedDeviceCount === 1
@@ -692,22 +729,20 @@ function App() {
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
                   className="inline-flex h-10 items-center gap-2 rounded-lg bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={waveBusy || activeOutputDeviceIds.length === 0}
-                  title="Start wave output"
+                  disabled={waveBusy || playing || activeOutputDeviceIds.length === 0}
+                  title="Start preview playback"
                   type="button"
-                  onClick={playPreviewWindow}
+                  onClick={startPreviewPlayback}
                 >
                   <Play size={16} />
                   Play
                 </button>
                 <button
-                  className="inline-flex h-10 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
-                  title="Pause wave output"
+                  className="inline-flex h-10 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={waveBusy || !playing}
+                  title="Pause preview playback"
                   type="button"
-                  onClick={() => {
-                    setPlaying(false);
-                    setWaveError(null);
-                  }}
+                  onClick={stopPreviewPlayback}
                 >
                   <Pause size={16} />
                   Pause
