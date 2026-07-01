@@ -60,6 +60,13 @@ type StorageStatus = {
   databasePath: string;
 };
 
+type RuntimeStatus = {
+  activeOutputDevices: string[];
+  bleOutputQueued: number;
+  bleOutputWritten: number;
+  bleOutputFailed: number;
+};
+
 type PluginRegistryEntry = {
   id: string;
   name: string;
@@ -115,6 +122,13 @@ const fallbackStorageStatus: StorageStatus = {
   databasePath: "",
 };
 
+const fallbackRuntimeStatus: RuntimeStatus = {
+  activeOutputDevices: [],
+  bleOutputQueued: 0,
+  bleOutputWritten: 0,
+  bleOutputFailed: 0,
+};
+
 const emptyPluginRegistry: PluginRegistryResponse = {
   plugins: [],
 };
@@ -150,6 +164,7 @@ function App() {
   const [externalBusy, setExternalBusy] = useState(false);
   const [lastScan, setLastScan] = useState<DeviceScanResponse | null>(null);
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
+  const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
   const [pluginRegistry, setPluginRegistry] = useState<PluginRegistryResponse | null>(null);
   const [scripts, setScripts] = useState<ScriptsResponse | null>(null);
   const [lastScriptRun, setLastScriptRun] = useState<ScriptRunResponse | null>(null);
@@ -174,6 +189,12 @@ function App() {
       .catch(() => setPluginRegistry(emptyPluginRegistry));
   }, []);
 
+  const refreshRuntimeStatus = useCallback(() => {
+    invoke<RuntimeStatus>("runtime_status")
+      .then(setRuntimeStatus)
+      .catch(() => setRuntimeStatus(fallbackRuntimeStatus));
+  }, []);
+
   const refreshScripts = useCallback(() => {
     invoke<ScriptsResponse>("list_scripts")
       .then(setScripts)
@@ -196,9 +217,10 @@ function App() {
     invoke<StorageStatus>("storage_status")
       .then(setStorageStatus)
       .catch(() => setStorageStatus(fallbackStorageStatus));
+    refreshRuntimeStatus();
     refreshPluginRegistry();
     refreshScripts();
-  }, [refreshExternalStatus, refreshPluginRegistry, refreshScripts]);
+  }, [refreshExternalStatus, refreshPluginRegistry, refreshRuntimeStatus, refreshScripts]);
 
   const startExternalControl = () => {
     setExternalBusy(true);
@@ -233,7 +255,10 @@ function App() {
   const stopOutput = () => {
     setStopBusy(true);
     invoke<StopOutputResponse>("stop_output")
-      .then(() => setPlaying(false))
+      .then(() => {
+        setPlaying(false);
+        refreshRuntimeStatus();
+      })
       .catch(() => setPlaying(false))
       .finally(() => setStopBusy(false));
   };
@@ -462,6 +487,14 @@ function App() {
                 label="Storage"
                 value={`SQLite schema ${storageStatus?.schemaVersion ?? 1}`}
                 tone="zinc"
+              />
+              <StatusPanel
+                icon={Activity}
+                label="Output"
+                value={`${runtimeStatus?.activeOutputDevices.length ?? 0} active - ${
+                  runtimeStatus?.bleOutputQueued ?? 0
+                }/${runtimeStatus?.bleOutputWritten ?? 0}/${runtimeStatus?.bleOutputFailed ?? 0}`}
+                tone="sky"
               />
               <ExternalControlPanel
                 defaultBind={status?.externalControlBind ?? "127.0.0.1:0"}
