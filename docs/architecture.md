@@ -100,12 +100,13 @@ Runtime engines exchange JSON envelopes with Rust Core. The stable invocation
 and output shape is documented in `docs/plugins/runtime-abi.md`.
 
 The current runtime implementation includes validation adapters for WASM and
-JavaScript. Bundle-backed WASM plugins are read from disk and validated as
-WebAssembly modules before lifecycle recording. Bundle-backed JavaScript
-plugins are read from disk, validated as non-empty UTF-8 module source, and may
-declare sandboxed hook outputs through the JSON `arcflowPlugin` export.
-Manifest-only plugins keep the recording path for development. Real engines
-will replace these adapters behind the same `RuntimeAdapter` boundary.
+JavaScript. Bundle-backed WASM plugins are read from disk, validated as
+WebAssembly modules, and may declare sandboxed hook outputs through an
+`arcflowPlugin` custom section. Bundle-backed JavaScript plugins are read from
+disk, validated as non-empty UTF-8 module source, and may declare the same hook
+outputs through the JSON `arcflowPlugin` export. Manifest-only plugins keep the
+recording path for development. Real engines will replace these adapters behind
+the same `RuntimeAdapter` boundary.
 
 Desktop startup restores the persisted plugin registry into this sandboxed
 runtime host. UI and plugin bridge registry mutations update SQLite first,

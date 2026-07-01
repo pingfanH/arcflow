@@ -11,9 +11,14 @@ lifecycle state: WASM entries must parse as WebAssembly modules, and JavaScript
 entries must be non-empty UTF-8 module source. Manifest-only plugins still use
 recording lifecycle for development.
 
-Bundle-backed JavaScript plugins may export a declarative `arcflowPlugin` JSON
-object. This keeps early plugins sandboxed and deterministic while the real JS
-engine call convention is attached behind the same runtime boundary:
+Bundle-backed WASM and JavaScript plugins may declare hook outputs with the
+same `arcflowPlugin` JSON object. This keeps early plugins sandboxed and
+deterministic while real engine call conventions are attached behind the same
+runtime boundary.
+
+For WASM, embed the JSON object in a custom section named `arcflowPlugin`.
+
+For JavaScript, export the JSON object:
 
 ```js
 export const arcflowPlugin = {

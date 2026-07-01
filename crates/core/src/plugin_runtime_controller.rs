@@ -666,6 +666,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wasm_hook_outputs_route_through_plugin_api() {
+        let bundle_root = test_bundle_root("plugin-runtime-controller-wasm-output");
+        fs::create_dir_all(bundle_root.join("dist")).unwrap();
+        fs::write(
+            bundle_root.join("dist/plugin.wasm"),
+            wasm_with_arcflow_plugin_definition(
+                br#"{
+                    "hooks": {
+                        "device.connected": {
+                            "actions": [
+                                {
+                                    "method": "storage.private.put",
+                                    "params": {
+                                        "key": "lastDevice",
+                                        "value": {"deviceId": "coyote-v3"}
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }"#,
+            ),
+        )
+        .unwrap();
+        let mut registry = PluginRegistry::new();
+        registry
+            .install_with_bundle_root(
+                manifest_with_capabilities(
+                    "plugin.wasm",
+                    RuntimeKind::Wasm,
+                    vec![Capability::StoragePrivate],
+                ),
+                bundle_root.display().to_string(),
+            )
+            .unwrap();
+        registry.enable("plugin.wasm").unwrap();
+        let storage = Arc::new(Mutex::new(Storage::in_memory().unwrap()));
+        let discovery_controller: Arc<dyn DeviceDiscoveryController> =
+            Arc::new(FakeDiscoveryController::default());
+        let output_controller: Arc<dyn DeviceOutputController> = Arc::new(FakeOutputController {
+            stop_count: Mutex::new(0),
+        });
+        let mut controller = RecordingPluginRuntimeController::new();
+        controller.sync_from_registry(&registry).await.unwrap();
+        let controller = Arc::new(AsyncMutex::new(controller));
+        let invoker = RecordingPluginRuntimeHookInvoker::with_plugin_api(
+            controller,
+            Arc::clone(&storage),
+            discovery_controller,
+            output_controller,
+        );
+
+        invoker
+            .invoke_plugin_hook(
+                "plugin.wasm",
+                "device.connected",
+                &json!({ "deviceId": "coyote-v3" }),
+            )
+            .await
+            .unwrap();
+
+        let stored = storage
+            .lock()
+            .unwrap()
+            .plugin_kv()
+            .get("plugin.wasm", "lastDevice")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&stored).unwrap(),
+            json!({ "deviceId": "coyote-v3" })
+        );
+
+        fs::remove_dir_all(bundle_root).unwrap();
+    }
+
+    #[tokio::test]
     async fn sync_rejects_invalid_javascript_bundle_entry() {
         let bundle_root = test_bundle_root("plugin-runtime-controller-js-invalid");
         fs::create_dir_all(bundle_root.join("dist")).unwrap();
@@ -776,5 +853,33 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("arcflow-{name}-{suffix}"))
+    }
+
+    fn wasm_with_arcflow_plugin_definition(definition: &[u8]) -> Vec<u8> {
+        let mut payload = Vec::new();
+        write_u32_leb("arcflowPlugin".len() as u32, &mut payload);
+        payload.extend_from_slice(b"arcflowPlugin");
+        payload.extend_from_slice(definition);
+
+        let mut module = MINIMAL_WASM_MODULE.to_vec();
+        module.push(0);
+        write_u32_leb(payload.len() as u32, &mut module);
+        module.extend_from_slice(&payload);
+        module
+    }
+
+    fn write_u32_leb(mut value: u32, output: &mut Vec<u8>) {
+        loop {
+            let mut byte = (value & 0x7F) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            output.push(byte);
+
+            if value == 0 {
+                break;
+            }
+        }
     }
 }
