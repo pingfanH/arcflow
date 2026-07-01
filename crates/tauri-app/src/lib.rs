@@ -24,8 +24,8 @@ use arcflow_plugin_runtime::{Capability, RecordedPlugin, RuntimeKind};
 use arcflow_script::ScriptCompiler;
 use arcflow_storage::Storage;
 use arcflow_tauri_platform::{
-    TauriBleDiscoveryController, TauriBleOutputEvent, TauriBleOutputSink,
-    UnsupportedTauriBleTransportProvider,
+    TauriBleDiscoveryController, TauriBleDiscoveryProvider, TauriBleOutputEvent,
+    TauriBleOutputSink, TauriBleTransportProvider, UnsupportedTauriBlePlatformProvider,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1631,9 +1631,13 @@ where
             };
             let (script_event_sender, script_events) = mpsc::unbounded_channel();
             let (output_event_sender, output_events) = mpsc::unbounded_channel();
-            let discovery_controller: Arc<dyn DeviceDiscoveryController> =
-                Arc::new(TauriBleDiscoveryController::unsupported());
-            let ble_transport_provider = Arc::new(UnsupportedTauriBleTransportProvider);
+            let ble_platform_provider = Arc::new(UnsupportedTauriBlePlatformProvider);
+            let discovery_provider: Arc<dyn TauriBleDiscoveryProvider> =
+                ble_platform_provider.clone();
+            let ble_transport_provider: Arc<dyn TauriBleTransportProvider> = ble_platform_provider;
+            let discovery_controller: Arc<dyn DeviceDiscoveryController> = Arc::new(
+                TauriBleDiscoveryController::with_provider(discovery_provider),
+            );
             let output_sink = TauriBleOutputSink::spawn_with_event_sink(
                 ble_transport_provider,
                 output_event_sender,
@@ -1735,6 +1739,7 @@ mod tests {
 
     use arcflow_external_control::{ClientHello, PROTOCOL_VERSION};
     use arcflow_plugin_runtime::{PluginManifest, PluginRegistry};
+    use arcflow_tauri_platform::UnsupportedTauriBleTransportProvider;
     use tokio::sync::Mutex as AsyncMutex;
 
     use super::*;
