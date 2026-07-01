@@ -56,6 +56,10 @@ type StopOutputResponse = {
   stoppedDevices: string[];
 };
 
+type OutputDeviceActivationResponse = {
+  activeOutputDevices: string[];
+};
+
 type StorageStatus = {
   schemaVersion: number;
   databasePath: string;
@@ -189,6 +193,7 @@ function App() {
   const [lastScriptRun, setLastScriptRun] = useState<ScriptRunResponse | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
   const [stopBusy, setStopBusy] = useState(false);
+  const [outputDeviceBusyId, setOutputDeviceBusyId] = useState<string | null>(null);
   const [pluginBusy, setPluginBusy] = useState(false);
   const [pluginBundlePath, setPluginBundlePath] = useState("");
   const [pluginError, setPluginError] = useState<string | null>(null);
@@ -278,12 +283,37 @@ function App() {
       .then((result) => {
         setLastScan(result);
         setDeviceOnline(result.devices.some((device) => device.connected));
+        refreshRuntimeStatus();
       })
       .catch(() => {
         setLastScan(emptyDeviceScan);
         setDeviceOnline(false);
       })
       .finally(() => setScanBusy(false));
+  };
+
+  const applyOutputDeviceActivation = (result: OutputDeviceActivationResponse) => {
+    setRuntimeStatus((current) => ({
+      ...(current ?? fallbackRuntimeStatus),
+      activeOutputDevices: result.activeOutputDevices,
+    }));
+    refreshRuntimeEvents();
+  };
+
+  const activateOutputDevice = (deviceId: string) => {
+    setOutputDeviceBusyId(deviceId);
+    invoke<OutputDeviceActivationResponse>("activate_output_device", { deviceId })
+      .then(applyOutputDeviceActivation)
+      .catch(refreshRuntimeStatus)
+      .finally(() => setOutputDeviceBusyId(null));
+  };
+
+  const deactivateOutputDevice = (deviceId: string) => {
+    setOutputDeviceBusyId(deviceId);
+    invoke<OutputDeviceActivationResponse>("deactivate_output_device", { deviceId })
+      .then(applyOutputDeviceActivation)
+      .catch(refreshRuntimeStatus)
+      .finally(() => setOutputDeviceBusyId(null));
   };
 
   const stopOutput = () => {
@@ -405,6 +435,7 @@ function App() {
     [activeTab],
   );
   const connectedDeviceCount = lastScan?.devices.filter((device) => device.connected).length ?? 0;
+  const activeOutputDeviceIds = runtimeStatus?.activeOutputDevices ?? [];
   const deviceSubtitle = useMemo(() => {
     if (connectedDeviceCount > 0) {
       return connectedDeviceCount === 1
@@ -497,6 +528,14 @@ function App() {
                   {deviceOnline ? "Online" : "Standby"}
                 </span>
               </div>
+
+              <DeviceList
+                activeOutputDeviceIds={activeOutputDeviceIds}
+                busyDeviceId={outputDeviceBusyId}
+                devices={lastScan?.devices ?? []}
+                onActivate={activateOutputDevice}
+                onDeactivate={deactivateOutputDevice}
+              />
 
               <div className="grid gap-4 lg:grid-cols-2">
                 <ChannelControl
@@ -623,6 +662,107 @@ function App() {
       </div>
     </main>
   );
+}
+
+type DeviceListProps = {
+  activeOutputDeviceIds: string[];
+  busyDeviceId: string | null;
+  devices: DeviceSummary[];
+  onActivate: (deviceId: string) => void;
+  onDeactivate: (deviceId: string) => void;
+};
+
+function DeviceList({
+  activeOutputDeviceIds,
+  busyDeviceId,
+  devices,
+  onActivate,
+  onDeactivate,
+}: DeviceListProps) {
+  if (devices.length === 0) {
+    return (
+      <div className="mb-4 rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-500">
+        No devices
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-4 space-y-2">
+      {devices.map((device) => {
+        const outputActive = activeOutputDeviceIds.includes(device.id);
+        const supportsOutput = device.connected && device.model === "coyoteV3";
+        const busy = busyDeviceId === device.id;
+
+        return (
+          <div
+            key={device.id}
+            className="flex min-w-0 items-center gap-3 rounded-lg bg-zinc-50 px-3 py-2"
+          >
+            <div
+              className={`grid size-9 shrink-0 place-items-center rounded-lg ${
+                outputActive ? "bg-teal-600 text-white" : "bg-white text-zinc-600"
+              }`}
+            >
+              <Bluetooth size={16} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <span className="truncate text-sm font-medium text-zinc-950">
+                  {deviceModelLabel(device.model)}
+                </span>
+                <span
+                  className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium ${
+                    outputActive ? "bg-teal-100 text-teal-700" : "bg-zinc-200 text-zinc-600"
+                  }`}
+                >
+                  {outputActive ? "Output" : device.connected ? "Ready" : "Offline"}
+                </span>
+              </div>
+              <div className="truncate text-xs text-zinc-500">
+                {device.id} - {batteryLabel(device.batteryPercent)}
+              </div>
+            </div>
+            <button
+              className={`grid size-9 shrink-0 place-items-center rounded-lg border disabled:cursor-not-allowed disabled:opacity-50 ${
+                outputActive
+                  ? "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                  : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100"
+              }`}
+              disabled={!supportsOutput || busy}
+              title={outputActive ? "Deactivate output" : "Activate output"}
+              type="button"
+              onClick={() => {
+                if (outputActive) {
+                  onDeactivate(device.id);
+                } else {
+                  onActivate(device.id);
+                }
+              }}
+            >
+              <Power size={16} />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function deviceModelLabel(model: string) {
+  if (model === "coyoteV3") {
+    return "Coyote V3";
+  }
+
+  if (model === "coyoteV2") {
+    return "Coyote V2";
+  }
+
+  return model;
+}
+
+function batteryLabel(percent: number | null) {
+  return percent === null ? "Battery --" : `Battery ${percent}%`;
 }
 
 type RuntimeEventsPanelProps = {

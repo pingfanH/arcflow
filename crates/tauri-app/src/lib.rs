@@ -181,6 +181,12 @@ struct StopOutputResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct OutputDeviceActivationResponse {
+    active_output_devices: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct StorageStatus {
     schema_version: i64,
     database_path: String,
@@ -456,6 +462,46 @@ fn stop_output(state: tauri::State<'_, CoreState>) -> Result<StopOutputResponse,
         .stop_all_output()
         .map(stop_output_response)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn activate_output_device(
+    device_id: String,
+    state: tauri::State<'_, CoreState>,
+    runtime_state: tauri::State<'_, RuntimeState>,
+) -> Result<OutputDeviceActivationResponse, String> {
+    let device_id = DeviceId::new(device_id);
+    let active_devices = state
+        .core
+        .attach_output_device(device_id.clone())
+        .map_err(|error| error.to_string())?;
+
+    runtime_state.events.push(
+        "device.output.activated",
+        format!("device `{}` activated for output", device_id.as_str()),
+    );
+
+    Ok(output_device_activation_response(active_devices))
+}
+
+#[tauri::command]
+fn deactivate_output_device(
+    device_id: String,
+    state: tauri::State<'_, CoreState>,
+    runtime_state: tauri::State<'_, RuntimeState>,
+) -> Result<OutputDeviceActivationResponse, String> {
+    let device_id = DeviceId::new(device_id);
+    let active_devices = state
+        .core
+        .detach_output_device(&device_id)
+        .map_err(|error| error.to_string())?;
+
+    runtime_state.events.push(
+        "device.output.deactivated",
+        format!("device `{}` deactivated for output", device_id.as_str()),
+    );
+
+    Ok(output_device_activation_response(active_devices))
 }
 
 #[tauri::command]
@@ -954,6 +1000,17 @@ fn stop_output_response(result: StopOutputResult) -> StopOutputResponse {
     }
 }
 
+fn output_device_activation_response(
+    active_devices: Vec<DeviceId>,
+) -> OutputDeviceActivationResponse {
+    OutputDeviceActivationResponse {
+        active_output_devices: active_devices
+            .into_iter()
+            .map(|device_id| device_id.as_str().to_owned())
+            .collect(),
+    }
+}
+
 /// Runs the shared ArcFlow Tauri application with a platform app context.
 pub fn run<R>(context: tauri::Context<R>)
 where
@@ -1047,6 +1104,8 @@ where
             run_script,
             scan_devices,
             stop_output,
+            activate_output_device,
+            deactivate_output_device,
             external_control_status,
             start_external_control,
             stop_external_control
@@ -1201,6 +1260,21 @@ mod tests {
         assert_eq!(
             runtime.output_controller.active_devices(),
             vec![DeviceId::new("kept-v3"), DeviceId::new("new-v3")]
+        );
+    }
+
+    #[test]
+    fn output_activation_response_lists_active_devices() {
+        let response = output_device_activation_response(vec![
+            DeviceId::new("coyote-a"),
+            DeviceId::new("coyote-b"),
+        ]);
+
+        assert_eq!(
+            response,
+            OutputDeviceActivationResponse {
+                active_output_devices: vec!["coyote-a".to_owned(), "coyote-b".to_owned()],
+            }
         );
     }
 }
