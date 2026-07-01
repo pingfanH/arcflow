@@ -15,8 +15,8 @@ use arcflow_core::{
     ScriptWorkerQueue, StopOutputResult, StorageScriptRunner,
 };
 use arcflow_external_control::{
-    ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
-    WsGatewayService, WsRequestHandler, DEFAULT_LOCAL_BIND,
+    ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, ServerEvent,
+    WsGatewayHandle, WsGatewayService, WsRequestHandler, DEFAULT_LOCAL_BIND,
 };
 use arcflow_plugin_runtime::Capability;
 use arcflow_script::ScriptCompiler;
@@ -26,7 +26,7 @@ use arcflow_tauri_platform::{
 };
 use serde::Serialize;
 use tauri::Manager;
-use tokio::sync::{mpsc, Mutex as AsyncMutex};
+use tokio::sync::{broadcast, mpsc, Mutex as AsyncMutex};
 
 #[derive(Default)]
 struct ExternalControlState {
@@ -59,9 +59,10 @@ const RUNTIME_STATUS_METHOD: &str = "runtime.status";
 const RUNTIME_EVENTS_METHOD: &str = "runtime.events";
 const RUNTIME_EVENT_LIMIT: usize = 128;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct RuntimeEventLog {
     inner: Arc<Mutex<RuntimeEventLogInner>>,
+    publisher: broadcast::Sender<ServerEvent>,
 }
 
 #[derive(Default)]
@@ -83,15 +84,20 @@ impl RuntimeEventLog {
         let mut inner = self.inner.lock().expect("runtime event log mutex poisoned");
         let sequence = inner.next_sequence;
         inner.next_sequence += 1;
-        inner.events.push_back(RuntimeEventRecord {
+        let record = RuntimeEventRecord {
             sequence,
             kind: kind.into(),
             message: message.into(),
-        });
+        };
+        inner.events.push_back(record.clone());
 
         while inner.events.len() > RUNTIME_EVENT_LIMIT {
             inner.events.pop_front();
         }
+
+        let _ = self
+            .publisher
+            .send(ServerEvent::new(runtime_event_payload(&record)));
     }
 
     fn list(&self) -> Vec<RuntimeEventRecord> {
@@ -103,6 +109,30 @@ impl RuntimeEventLog {
             .cloned()
             .collect()
     }
+
+    fn server_event_sender(&self) -> broadcast::Sender<ServerEvent> {
+        self.publisher.clone()
+    }
+}
+
+impl Default for RuntimeEventLog {
+    fn default() -> Self {
+        let (publisher, _) = broadcast::channel(RUNTIME_EVENT_LIMIT);
+
+        Self {
+            inner: Arc::new(Mutex::new(RuntimeEventLogInner::default())),
+            publisher,
+        }
+    }
+}
+
+fn runtime_event_payload(record: &RuntimeEventRecord) -> serde_json::Value {
+    serde_json::to_value(record).unwrap_or_else(|error| {
+        serde_json::json!({
+            "kind": "runtime.event.error",
+            "message": error.to_string(),
+        })
+    })
 }
 
 #[derive(Serialize)]
@@ -411,13 +441,18 @@ async fn start_external_control(
     }
 
     let service = WsGatewayService::new(DEFAULT_LOCAL_BIND, GatewayPolicy::local_default());
+    let runtime = runtime_state.inner().clone();
+    let event_sender = runtime.events.server_event_sender();
     let handle = service
-        .start(external_request_handler(
-            core_state.core.clone(),
-            Arc::clone(&storage_state.storage),
-            runtime_state.inner().clone(),
-            plugin_runtime_state.inner().clone(),
-        ))
+        .start_with_events(
+            external_request_handler(
+                core_state.core.clone(),
+                Arc::clone(&storage_state.storage),
+                runtime,
+                plugin_runtime_state.inner().clone(),
+            ),
+            event_sender,
+        )
         .await
         .map_err(|error| error.to_string())?;
     let status = external_control_status_from_handle(&handle);

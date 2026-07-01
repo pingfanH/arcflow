@@ -67,6 +67,10 @@ Plugin registry mutations are persisted in SQLite and synchronized into the
 Core-owned sandboxed plugin runtime. Plugins still cannot access Bluetooth
 directly; enabled plugins are loaded behind the Plugin API boundary.
 
+Clients granted `events.subscribe` receive pushed WebSocket event envelopes for
+runtime events. Polling through `runtime.events` remains available for clients
+that only need snapshots.
+
 ## JSON-RPC
 
 After hello, requests use JSON-RPC 2.0 envelopes:
@@ -238,6 +242,19 @@ events.
   "jsonrpc": "2.0",
   "id": 9,
   "method": "runtime.events"
+}
+```
+
+Subscribed clients also receive pushed event envelopes:
+
+```json
+{
+  "method": "event",
+  "params": {
+    "sequence": 1,
+    "kind": "script.completed",
+    "message": "script `script.demo` completed 2 steps"
+  }
 }
 ```
 

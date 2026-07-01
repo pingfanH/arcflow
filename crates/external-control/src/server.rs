@@ -16,14 +16,14 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::watch,
+    sync::{broadcast, watch},
     task::JoinHandle,
 };
 use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
 
 use crate::{
     ClientHello, ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError,
-    SessionError, PROTOCOL_VERSION,
+    ServerEvent, SessionError, PROTOCOL_VERSION,
 };
 
 /// Future returned by a WebSocket JSON-RPC request handler.
@@ -177,6 +177,24 @@ impl WsGatewayService {
         self,
         request_handler: WsRequestHandler,
     ) -> Result<WsGatewayHandle, WsGatewayError> {
+        self.start_with_optional_events(request_handler, None).await
+    }
+
+    /// Starts listening with a server-event source for subscribed clients.
+    pub async fn start_with_events(
+        self,
+        request_handler: WsRequestHandler,
+        event_sender: broadcast::Sender<ServerEvent>,
+    ) -> Result<WsGatewayHandle, WsGatewayError> {
+        self.start_with_optional_events(request_handler, Some(event_sender))
+            .await
+    }
+
+    async fn start_with_optional_events(
+        self,
+        request_handler: WsRequestHandler,
+        event_sender: Option<broadcast::Sender<ServerEvent>>,
+    ) -> Result<WsGatewayHandle, WsGatewayError> {
         let listener = TcpListener::bind(&self.bind_address)
             .await
             .map_err(WsGatewayError::Io)?;
@@ -201,6 +219,7 @@ impl WsGatewayService {
                         let accepted_sessions = Arc::clone(&accepted_for_task);
                         let active_sessions = Arc::clone(&active_for_task);
                         let shutdown_rx = shutdown_for_task.subscribe();
+                        let event_sender = event_sender.clone();
 
                         tokio::spawn(async move {
                             serve_client(
@@ -210,6 +229,7 @@ impl WsGatewayService {
                                 accepted_sessions,
                                 active_sessions,
                                 shutdown_rx,
+                                event_sender,
                             )
                             .await;
                         });
@@ -307,11 +327,17 @@ async fn serve_client(
     accepted_sessions: Arc<AtomicUsize>,
     active_sessions: Arc<AtomicUsize>,
     mut shutdown_rx: watch::Receiver<bool>,
+    event_sender: Option<broadcast::Sender<ServerEvent>>,
 ) {
     let Ok(client) = gateway.accept_client(stream).await else {
         return;
     };
     let (session, mut socket) = client.into_parts();
+    let mut event_rx = if session.has_capability(Capability::EventsSubscribe) {
+        event_sender.as_ref().map(|sender| sender.subscribe())
+    } else {
+        None
+    };
 
     accepted_sessions.fetch_add(1, Ordering::Relaxed);
     active_sessions.fetch_add(1, Ordering::Relaxed);
@@ -351,10 +377,39 @@ async fn serve_client(
                     Err(_) => break,
                 }
             }
+            event = next_server_event(&mut event_rx) => {
+                let Some(event) = event else {
+                    event_rx = None;
+                    continue;
+                };
+                let Ok(payload) = serde_json::to_string(&event) else {
+                    break;
+                };
+
+                if socket.send(Message::Text(payload.into())).await.is_err() {
+                    break;
+                }
+            }
         }
     }
 
     active_sessions.fetch_sub(1, Ordering::Relaxed);
+}
+
+async fn next_server_event(
+    receiver: &mut Option<broadcast::Receiver<ServerEvent>>,
+) -> Option<ServerEvent> {
+    let Some(receiver) = receiver else {
+        return std::future::pending::<Option<ServerEvent>>().await;
+    };
+
+    loop {
+        match receiver.recv().await {
+            Ok(event) => return Some(event),
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => return None,
+        }
+    }
 }
 
 /// Error returned by the WebSocket gateway.
@@ -394,7 +449,7 @@ mod tests {
     use arcflow_plugin_runtime::Capability;
     use futures_util::{SinkExt, StreamExt};
     use serde_json::json;
-    use tokio::net::TcpListener;
+    use tokio::{net::TcpListener, sync::broadcast};
     use tokio_tungstenite::{connect_async, tungstenite::Message};
 
     use super::*;
@@ -470,6 +525,64 @@ mod tests {
         let status = handle.status();
         assert_eq!(status.accepted_sessions, 1);
         assert_eq!(status.active_sessions, 1);
+
+        handle.stop().await;
+    }
+
+    #[tokio::test]
+    async fn service_pushes_events_to_subscribed_clients() {
+        let service = WsGatewayService::new(
+            "127.0.0.1:0",
+            GatewayPolicy::new(vec![Capability::EventsSubscribe]),
+        );
+        let handler: WsRequestHandler = Arc::new(|_session, request| {
+            Box::pin(async move { JsonRpcResponse::ok(request.id, json!({ "ok": true })) })
+        });
+        let (event_sender, _) = broadcast::channel(8);
+        let handle = service
+            .start_with_events(handler, event_sender.clone())
+            .await
+            .unwrap();
+        let address = handle.bind_address();
+
+        let (mut client, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        let hello = ClientHello {
+            client_name: "Event Client".to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            requested_capabilities: vec![Capability::EventsSubscribe],
+        };
+        client
+            .send(Message::Text(serde_json::to_string(&hello).unwrap().into()))
+            .await
+            .unwrap();
+        let _accepted = client.next().await.unwrap().unwrap();
+
+        let request = JsonRpcRequest::new(crate::RequestId::Number(1), "runtime.events", None);
+        client
+            .send(Message::Text(
+                serde_json::to_string(&request).unwrap().into(),
+            ))
+            .await
+            .unwrap();
+        let _response = client.next().await.unwrap().unwrap();
+
+        event_sender
+            .send(ServerEvent::new(json!({
+                "kind": "runtime.ready",
+                "message": "runtime ready"
+            })))
+            .unwrap();
+
+        let event = client.next().await.unwrap().unwrap().into_text().unwrap();
+        let event: ServerEvent = serde_json::from_str(&event).unwrap();
+
+        assert_eq!(
+            event,
+            ServerEvent::new(json!({
+                "kind": "runtime.ready",
+                "message": "runtime ready"
+            }))
+        );
 
         handle.stop().await;
     }
