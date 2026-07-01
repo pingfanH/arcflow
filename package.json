@@ -6,6 +6,9 @@
   "scripts": {
     "dev:desktop": "pnpm --filter @arcflow/desktop tauri dev",
     "build:desktop": "pnpm --filter @arcflow/desktop tauri build",
+    "dev:mobile": "pnpm --filter @arcflow/mobile tauri dev",
+    "android:dev": "pnpm --filter @arcflow/mobile tauri android dev",
+    "ios:dev": "pnpm --filter @arcflow/mobile tauri ios dev",
     "check:frontend": "pnpm --filter @arcflow/desktop build"
   }
 }
