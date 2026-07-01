@@ -8,6 +8,7 @@
 
 pub mod capability;
 pub mod host;
+pub mod javascript;
 pub mod manifest;
 pub mod recording;
 pub mod registry;
@@ -18,6 +19,7 @@ pub mod wasm;
 
 pub use capability::Capability;
 pub use host::{PluginHost, PluginHostError};
+pub use javascript::JavaScriptValidationRuntimeAdapter;
 pub use manifest::{ManifestError, PluginManifest, RuntimeKind};
 pub use recording::{
     RecordedPlugin, RecordingRuntimeAdapter, RecordingRuntimeEvent, RecordingRuntimeSnapshot,

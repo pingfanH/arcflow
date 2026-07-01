@@ -4,9 +4,9 @@ use core::fmt;
 use std::{collections::BTreeSet, sync::Arc};
 
 use arcflow_plugin_runtime::{
-    PluginHost, PluginHostError, PluginInvocation, PluginOutput, PluginRegistry, RecordedPlugin,
-    RecordingRuntimeAdapter, RecordingRuntimeSnapshot, RuntimeRouter, SandboxedRuntime,
-    WasmValidationRuntimeAdapter,
+    JavaScriptValidationRuntimeAdapter, PluginHost, PluginHostError, PluginInvocation,
+    PluginOutput, PluginRegistry, RecordedPlugin, RecordingRuntimeSnapshot, RuntimeRouter,
+    SandboxedRuntime, WasmValidationRuntimeAdapter,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -16,7 +16,7 @@ use crate::{CoreError, PluginHookInvoker};
 
 /// Runtime router used by the current plugin runtime.
 pub type ArcFlowPluginRuntimeRouter =
-    RuntimeRouter<WasmValidationRuntimeAdapter, RecordingRuntimeAdapter>;
+    RuntimeRouter<WasmValidationRuntimeAdapter, JavaScriptValidationRuntimeAdapter>;
 
 /// Sandboxed runtime used by the current plugin host.
 pub type ArcFlowPluginRuntime = SandboxedRuntime<ArcFlowPluginRuntimeRouter>;
@@ -31,7 +31,7 @@ pub struct RecordingPluginRuntimeController {
 }
 
 impl RecordingPluginRuntimeController {
-    /// Constructs a plugin runtime controller backed by WASM validation and JS recording runtimes.
+    /// Constructs a plugin runtime controller backed by WASM and JS validation runtimes.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -262,7 +262,7 @@ impl PluginHookInvoker for RecordingPluginRuntimeHookInvoker {
 fn new_recording_plugin_host() -> ArcFlowPluginHost {
     PluginHost::new(SandboxedRuntime::default_policy(RuntimeRouter::new(
         WasmValidationRuntimeAdapter::new(),
-        RecordingRuntimeAdapter::javascript(),
+        JavaScriptValidationRuntimeAdapter::new(),
     )))
 }
 
@@ -347,6 +347,53 @@ mod tests {
             controller.loaded_plugins()[0].bundle_root,
             Some(bundle_root.display().to_string())
         );
+
+        fs::remove_dir_all(bundle_root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sync_loads_javascript_bundle_through_validation_runtime() {
+        let bundle_root = test_bundle_root("plugin-runtime-controller-js");
+        fs::create_dir_all(bundle_root.join("dist")).unwrap();
+        fs::write(bundle_root.join("dist/plugin.js"), b"export default {};").unwrap();
+        let mut registry = PluginRegistry::new();
+        registry
+            .install_with_bundle_root(
+                manifest("plugin.js", RuntimeKind::JavaScript),
+                bundle_root.display().to_string(),
+            )
+            .unwrap();
+        registry.enable("plugin.js").unwrap();
+        let mut controller = RecordingPluginRuntimeController::new();
+
+        controller.sync_from_registry(&registry).await.unwrap();
+
+        assert_eq!(
+            controller.loaded_plugins()[0].bundle_root,
+            Some(bundle_root.display().to_string())
+        );
+
+        fs::remove_dir_all(bundle_root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sync_rejects_invalid_javascript_bundle_entry() {
+        let bundle_root = test_bundle_root("plugin-runtime-controller-js-invalid");
+        fs::create_dir_all(bundle_root.join("dist")).unwrap();
+        fs::write(bundle_root.join("dist/plugin.js"), b" \n").unwrap();
+        let mut registry = PluginRegistry::new();
+        registry
+            .install_with_bundle_root(
+                manifest("plugin.js", RuntimeKind::JavaScript),
+                bundle_root.display().to_string(),
+            )
+            .unwrap();
+        registry.enable("plugin.js").unwrap();
+        let mut controller = RecordingPluginRuntimeController::new();
+
+        let error = controller.sync_from_registry(&registry).await.unwrap_err();
+
+        assert!(error.to_string().contains("is empty"));
 
         fs::remove_dir_all(bundle_root).unwrap();
     }

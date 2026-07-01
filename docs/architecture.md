@@ -41,8 +41,9 @@ device-facing operation.
 - `crates/wave`: safe wave-domain values and Coyote V3 window conversion.
 - `crates/script`: safe plugin automation document model and compiler.
 - `crates/plugin-runtime`: WASM/JavaScript plugin manifests, capabilities,
-  sandbox policy, registry, runtime routing, and a deterministic recording
-  runtime used until real WASM/JS engines are attached.
+  sandbox policy, registry, runtime routing, validation adapters, and
+  deterministic recording lifecycle used until real WASM/JS engines are
+  attached.
 - `crates/storage`: SQLite schema and Rust-owned stores for plugin data,
   installed plugins, and plugin automations.
 - `crates/external-control`: local WebSocket protocol and gateway for the
@@ -98,12 +99,14 @@ runtimes at `.js` or `.mjs` entries.
 Runtime engines exchange JSON envelopes with Rust Core. The stable invocation
 and output shape is documented in `docs/plugins/runtime-abi.md`.
 
-The current runtime implementation includes a recording adapter for JavaScript
-and a WASM validation adapter. Bundle-backed WASM plugins are read from disk and
-validated before lifecycle recording; manifest-only WASM plugins keep the
-recording path for development. Runtime invocation still returns empty plugin
-output while the engine call convention is being attached. Real engines will
-replace these adapters behind the same `RuntimeAdapter` boundary.
+The current runtime implementation includes validation adapters for WASM and
+JavaScript. Bundle-backed WASM plugins are read from disk and validated as
+WebAssembly modules before lifecycle recording. Bundle-backed JavaScript
+plugins are read from disk and validated as non-empty UTF-8 module source before
+lifecycle recording. Manifest-only plugins keep the recording path for
+development. Runtime invocation still returns empty plugin output while the
+engine call convention is being attached. Real engines will replace these
+adapters behind the same `RuntimeAdapter` boundary.
 
 Desktop startup restores the persisted plugin registry into this sandboxed
 runtime host. UI and plugin bridge registry mutations update SQLite first,
