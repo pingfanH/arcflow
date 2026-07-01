@@ -33,9 +33,11 @@ device-facing operation.
 - `crates/core`: orchestration, safety limits, BLE seams, Coyote command
   builders, plugin automation execution, Plugin API bridge, and plugin bridge
   request routing.
-- `crates/tauri-platform`: Tauri 2 desktop/mobile platform adapters. The current
-  BLE scaffold exposes a shared platform provider contract plus unsupported,
-  permission-denied, powered-off, and ready scan states.
+- `crates/tauri-platform`: Tauri 2 desktop/mobile platform adapters. It exposes
+  one shared BLE platform provider contract for scanning, connecting,
+  device-scoped writes, subscriptions, and battery reads. Desktop enables the
+  `native-ble` provider; mobile keeps the same contract for a Tauri mobile BLE
+  backend without pulling desktop-only BLE dependencies.
 - `crates/protocol`: byte-level Coyote V2/V3 protocol parsing and command
   construction. It does not manage Bluetooth connections.
 - `crates/wave`: safe wave-domain values and Coyote V3 window conversion.
@@ -54,13 +56,14 @@ device-facing operation.
 ## Device Flow
 
 Platform BLE adapters emit advertisements and transport operations into Rust.
-Core maps Coyote V2/V3 advertisements into `DeviceStatus`, builds safe Coyote V3
-writes through `CoyoteV3CommandBuilder`, and sends bytes through `BleTransport`.
+Core maps Coyote V2/V3 advertisements into `DeviceStatus`, including
+platform-known connection state and battery percentage. Coyote V3 writes are
+built through `CoyoteV3CommandBuilder` and sent through `BleTransport`.
 Core `BleTransport` remains scoped to an active device session. The Tauri
-platform provider receives device-scoped write and subscription requests so the
-real desktop/mobile BLE adapter can route operations to the correct native
-connection without exposing platform routing details back to Core, React, or
-plugins.
+platform provider receives device-scoped connect, write, subscription, and
+battery requests so the real desktop/mobile BLE adapter can route operations to
+the correct native connection without exposing platform routing details back to
+Core, React, or plugins.
 Core output controllers also own the active output-device set. UI and the
 plugin domain can observe or request output activation through Rust APIs, but
 React does not maintain a parallel Bluetooth connection model.

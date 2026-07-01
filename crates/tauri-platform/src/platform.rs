@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use arcflow_core::CoreError;
+use arcflow_core::{CoreError, DeviceId};
 use async_trait::async_trait;
 
 use crate::{
@@ -15,14 +15,38 @@ use crate::{
 /// Desktop and mobile shells should inject one provider that owns both device
 /// discovery and device-scoped writes. Core still talks only to the narrow
 /// discovery and transport traits.
+#[async_trait]
 pub trait TauriBlePlatformProvider:
     TauriBleDiscoveryProvider + TauriBleTransportProvider + fmt::Debug + Send + Sync
 {
+    /// Connects to a discovered BLE device and performs basic status setup.
+    async fn connect_device(
+        &self,
+        device_id: DeviceId,
+    ) -> Result<TauriBleConnectionState, CoreError>;
+
+    /// Reads a connected device battery percentage when available.
+    async fn read_battery_percent(&self, device_id: &DeviceId) -> Result<Option<u8>, CoreError>;
 }
 
-impl<T> TauriBlePlatformProvider for T where
-    T: TauriBleDiscoveryProvider + TauriBleTransportProvider + fmt::Debug + Send + Sync
-{
+/// Result returned after connecting a platform BLE device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TauriBleConnectionState {
+    /// Connected device id.
+    pub device_id: DeviceId,
+    /// Battery percentage if the platform can read it.
+    pub battery_percent: Option<u8>,
+}
+
+impl TauriBleConnectionState {
+    /// Constructs a connection state.
+    #[must_use]
+    pub fn new(device_id: DeviceId, battery_percent: Option<u8>) -> Self {
+        Self {
+            device_id,
+            battery_percent,
+        }
+    }
 }
 
 /// Combined provider used until a real Tauri BLE backend is attached.
@@ -45,6 +69,24 @@ impl TauriBleTransportProvider for UnsupportedTauriBlePlatformProvider {
     }
 
     async fn subscribe(&self, _request: TauriBleSubscriptionRequest) -> Result<(), CoreError> {
+        Err(CoreError::Transport(
+            "tauri BLE platform provider is not configured".to_owned(),
+        ))
+    }
+}
+
+#[async_trait]
+impl TauriBlePlatformProvider for UnsupportedTauriBlePlatformProvider {
+    async fn connect_device(
+        &self,
+        _device_id: DeviceId,
+    ) -> Result<TauriBleConnectionState, CoreError> {
+        Err(CoreError::Transport(
+            "tauri BLE platform provider is not configured".to_owned(),
+        ))
+    }
+
+    async fn read_battery_percent(&self, _device_id: &DeviceId) -> Result<Option<u8>, CoreError> {
         Err(CoreError::Transport(
             "tauri BLE platform provider is not configured".to_owned(),
         ))
@@ -90,6 +132,23 @@ mod tests {
 
         assert!(write_error.to_string().contains("not configured"));
         assert!(subscribe_error.to_string().contains("not configured"));
+    }
+
+    #[tokio::test]
+    async fn unsupported_platform_provider_rejects_connection_operations() {
+        let provider = UnsupportedTauriBlePlatformProvider;
+
+        let connect_error = provider
+            .connect_device(DeviceId::new("coyote-v3"))
+            .await
+            .unwrap_err();
+        let battery_error = provider
+            .read_battery_percent(&DeviceId::new("coyote-v3"))
+            .await
+            .unwrap_err();
+
+        assert!(connect_error.to_string().contains("not configured"));
+        assert!(battery_error.to_string().contains("not configured"));
     }
 
     #[test]

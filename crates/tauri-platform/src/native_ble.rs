@@ -1,0 +1,302 @@
+//! Native desktop BLE provider backed by `btleplug`.
+
+use std::{collections::HashMap, time::Duration};
+
+use arcflow_core::{
+    BleAdvertisement, BleCharacteristic, CoreError, DeviceId, COYOTE_V2_SERVICE_UUID,
+    COYOTE_V3_SERVICE_UUID,
+};
+use async_trait::async_trait;
+use btleplug::{
+    api::{Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType},
+    platform::{Adapter, Manager, Peripheral},
+};
+use tokio::{sync::Mutex, time::sleep};
+use uuid::Uuid;
+
+use crate::{
+    TauriBleConnectionState, TauriBleDiscoveryProvider, TauriBleDiscoveryState,
+    TauriBlePlatformProvider, TauriBleSubscriptionRequest, TauriBleTransportProvider,
+    TauriBleWriteRequest,
+};
+
+const DEFAULT_SCAN_DURATION: Duration = Duration::from_millis(2500);
+
+/// Desktop BLE provider used by Tauri shells on platforms supported by `btleplug`.
+#[derive(Debug)]
+pub struct NativeBlePlatformProvider {
+    scan_duration: Duration,
+    connections: Mutex<HashMap<DeviceId, Peripheral>>,
+}
+
+impl NativeBlePlatformProvider {
+    /// Constructs a native BLE provider with a default short scan window.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            scan_duration: DEFAULT_SCAN_DURATION,
+            connections: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Constructs a native BLE provider with an explicit scan duration.
+    #[must_use]
+    pub fn with_scan_duration(scan_duration: Duration) -> Self {
+        Self {
+            scan_duration,
+            connections: Mutex::new(HashMap::new()),
+        }
+    }
+
+    async fn adapter(&self) -> Result<Adapter, CoreError> {
+        let manager = Manager::new().await.map_err(transport_error)?;
+        let adapters = manager.adapters().await.map_err(transport_error)?;
+        adapters
+            .into_iter()
+            .next()
+            .ok_or_else(|| CoreError::Transport("no BLE adapter is available".to_owned()))
+    }
+
+    async fn find_peripheral(&self, device_id: &DeviceId) -> Result<Peripheral, CoreError> {
+        if let Some(peripheral) = self.connections.lock().await.get(device_id).cloned() {
+            return Ok(peripheral);
+        }
+
+        let adapter = self.adapter().await?;
+        adapter
+            .start_scan(ScanFilter::default())
+            .await
+            .map_err(transport_error)?;
+        sleep(self.scan_duration).await;
+
+        for peripheral in adapter.peripherals().await.map_err(transport_error)? {
+            if peripheral.id().to_string() == device_id.as_str() {
+                return Ok(peripheral);
+            }
+        }
+
+        Err(CoreError::Transport(format!(
+            "BLE device `{}` was not found",
+            device_id.as_str()
+        )))
+    }
+
+    async fn ensure_connected(&self, device_id: &DeviceId) -> Result<Peripheral, CoreError> {
+        let peripheral = self.find_peripheral(device_id).await?;
+        if !peripheral.is_connected().await.map_err(transport_error)? {
+            peripheral.connect().await.map_err(transport_error)?;
+        }
+        peripheral
+            .discover_services()
+            .await
+            .map_err(transport_error)?;
+        self.connections
+            .lock()
+            .await
+            .insert(device_id.clone(), peripheral.clone());
+        Ok(peripheral)
+    }
+
+    async fn read_battery_from_peripheral(
+        &self,
+        peripheral: &Peripheral,
+    ) -> Result<Option<u8>, CoreError> {
+        let Some(characteristic) =
+            find_characteristic(peripheral, BleCharacteristic::CoyoteBattery)
+        else {
+            return Ok(None);
+        };
+
+        let payload = peripheral
+            .read(&characteristic)
+            .await
+            .map_err(transport_error)?;
+        Ok(payload.first().copied().filter(|percent| *percent <= 100))
+    }
+
+    async fn subscribe_if_present(
+        &self,
+        peripheral: &Peripheral,
+        characteristic: BleCharacteristic,
+    ) -> Result<(), CoreError> {
+        let Some(characteristic) = find_characteristic(peripheral, characteristic) else {
+            return Ok(());
+        };
+
+        peripheral
+            .subscribe(&characteristic)
+            .await
+            .map_err(transport_error)
+    }
+}
+
+impl Default for NativeBlePlatformProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl TauriBleDiscoveryProvider for NativeBlePlatformProvider {
+    async fn scan_state(&self) -> Result<TauriBleDiscoveryState, CoreError> {
+        let adapter = match self.adapter().await {
+            Ok(adapter) => adapter,
+            Err(error) if error.to_string().contains("no BLE adapter") => {
+                return Ok(TauriBleDiscoveryState::PoweredOff);
+            }
+            Err(error) => return Err(error),
+        };
+
+        adapter
+            .start_scan(ScanFilter::default())
+            .await
+            .map_err(transport_error)?;
+        sleep(self.scan_duration).await;
+
+        let mut advertisements = Vec::new();
+        for peripheral in adapter.peripherals().await.map_err(transport_error)? {
+            let Some(properties) = peripheral.properties().await.map_err(transport_error)? else {
+                continue;
+            };
+            let service_uuids = properties
+                .services
+                .iter()
+                .filter_map(short_uuid)
+                .collect::<Vec<_>>();
+
+            if !service_uuids.contains(&COYOTE_V2_SERVICE_UUID)
+                && !service_uuids.contains(&COYOTE_V3_SERVICE_UUID)
+            {
+                continue;
+            }
+
+            let connected = peripheral.is_connected().await.unwrap_or(false);
+            let battery_percent = if connected {
+                peripheral
+                    .discover_services()
+                    .await
+                    .map_err(transport_error)?;
+                self.read_battery_from_peripheral(&peripheral).await?
+            } else {
+                None
+            };
+
+            advertisements.push(
+                BleAdvertisement::new(
+                    DeviceId::new(peripheral.id().to_string()),
+                    properties.local_name,
+                    properties.rssi,
+                    service_uuids,
+                )
+                .with_connected(connected)
+                .with_battery_percent(battery_percent),
+            );
+        }
+
+        Ok(TauriBleDiscoveryState::Ready { advertisements })
+    }
+}
+
+#[async_trait]
+impl TauriBleTransportProvider for NativeBlePlatformProvider {
+    async fn write(&self, request: TauriBleWriteRequest) -> Result<(), CoreError> {
+        let peripheral = self.ensure_connected(&request.device_id).await?;
+        let characteristic = find_characteristic(&peripheral, request.write.characteristic)
+            .ok_or_else(|| missing_characteristic_error(request.write.characteristic))?;
+
+        peripheral
+            .write(
+                &characteristic,
+                &request.write.payload,
+                WriteType::WithoutResponse,
+            )
+            .await
+            .map_err(transport_error)
+    }
+
+    async fn subscribe(&self, request: TauriBleSubscriptionRequest) -> Result<(), CoreError> {
+        let peripheral = self.ensure_connected(&request.device_id).await?;
+        let characteristic = find_characteristic(&peripheral, request.characteristic)
+            .ok_or_else(|| missing_characteristic_error(request.characteristic))?;
+
+        peripheral
+            .subscribe(&characteristic)
+            .await
+            .map_err(transport_error)
+    }
+}
+
+#[async_trait]
+impl TauriBlePlatformProvider for NativeBlePlatformProvider {
+    async fn connect_device(
+        &self,
+        device_id: DeviceId,
+    ) -> Result<TauriBleConnectionState, CoreError> {
+        let peripheral = self.ensure_connected(&device_id).await?;
+        self.subscribe_if_present(&peripheral, BleCharacteristic::CoyoteV3Notify)
+            .await?;
+        self.subscribe_if_present(&peripheral, BleCharacteristic::CoyoteBattery)
+            .await?;
+        let battery_percent = self.read_battery_from_peripheral(&peripheral).await?;
+
+        Ok(TauriBleConnectionState::new(device_id, battery_percent))
+    }
+
+    async fn read_battery_percent(&self, device_id: &DeviceId) -> Result<Option<u8>, CoreError> {
+        let peripheral = self.ensure_connected(device_id).await?;
+        self.read_battery_from_peripheral(&peripheral).await
+    }
+}
+
+fn find_characteristic(
+    peripheral: &Peripheral,
+    characteristic: BleCharacteristic,
+) -> Option<Characteristic> {
+    let uuid = Uuid::parse_str(&characteristic.uuid()).ok()?;
+    peripheral
+        .characteristics()
+        .into_iter()
+        .find(|candidate| candidate.uuid == uuid)
+}
+
+fn short_uuid(uuid: &Uuid) -> Option<u16> {
+    let value = uuid.to_string();
+    let Some(hex) = value
+        .strip_prefix("0000")
+        .and_then(|rest| rest.strip_suffix("-0000-1000-8000-00805f9b34fb"))
+    else {
+        return None;
+    };
+
+    u16::from_str_radix(hex, 16).ok()
+}
+
+fn transport_error(error: impl std::fmt::Display) -> CoreError {
+    CoreError::Transport(error.to_string())
+}
+
+fn missing_characteristic_error(characteristic: BleCharacteristic) -> CoreError {
+    CoreError::Transport(format!(
+        "BLE characteristic {} is not available",
+        characteristic.uuid()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracts_short_bluetooth_uuid() {
+        let uuid = Uuid::parse_str("0000180c-0000-1000-8000-00805f9b34fb").unwrap();
+
+        assert_eq!(short_uuid(&uuid), Some(COYOTE_V3_SERVICE_UUID));
+    }
+
+    #[test]
+    fn ignores_non_bluetooth_base_uuid() {
+        let uuid = Uuid::parse_str("f000180c-0000-1000-8000-00805f9b34fb").unwrap();
+
+        assert_eq!(short_uuid(&uuid), None);
+    }
+}

@@ -6,8 +6,9 @@ description = "Shared Tauri 2 application runtime for ArcFlow desktop and mobile
 publish = false
 
 [features]
-default = []
+default = ["native-ble"]
 mobile-shell = []
+native-ble = ["arcflow-tauri-platform/native-ble"]
 
 [dependencies]
 arcflow-core.workspace = true

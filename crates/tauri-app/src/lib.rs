@@ -23,9 +23,11 @@ use arcflow_external_control::{
 use arcflow_plugin_runtime::{Capability, RecordedPlugin, RuntimeKind};
 use arcflow_script::ScriptCompiler;
 use arcflow_storage::Storage;
+#[cfg(feature = "native-ble")]
+use arcflow_tauri_platform::NativeBlePlatformProvider;
 use arcflow_tauri_platform::{
     TauriBleDiscoveryController, TauriBleDiscoveryProvider, TauriBleOutputEvent,
-    TauriBleOutputSink, TauriBleTransportProvider, UnsupportedTauriBlePlatformProvider,
+    TauriBleOutputSink, TauriBlePlatformProvider, TauriBleTransportProvider,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -77,6 +79,7 @@ struct StorageState {
 #[derive(Clone)]
 struct RuntimeState {
     discovery_controller: Arc<dyn DeviceDiscoveryController>,
+    ble_platform_provider: Arc<dyn TauriBlePlatformProvider>,
     output_controller: Arc<CoyoteV3OutputController<TauriBleOutputSink>>,
     output_host: Arc<dyn DeviceOutputController>,
     output_sink: TauriBleOutputSink,
@@ -566,6 +569,40 @@ async fn scan_devices(
         .await
         .map_err(|error| error.to_string())?;
 
+    sync_active_coyote_v3_output_devices(&runtime_state, &scan);
+
+    Ok(device_scan_response(scan))
+}
+
+#[tauri::command]
+async fn connect_device(
+    device_id: String,
+    state: tauri::State<'_, CoreState>,
+    runtime_state: tauri::State<'_, RuntimeState>,
+) -> Result<DeviceScanResponse, String> {
+    let device_id = DeviceId::new(device_id);
+    let connection = runtime_state
+        .ble_platform_provider
+        .connect_device(device_id.clone())
+        .await
+        .map_err(|error| error.to_string())?;
+
+    runtime_state.events.push(
+        "device.connected",
+        match connection.battery_percent {
+            Some(percent) => format!(
+                "device `{}` connected with {percent}% battery",
+                connection.device_id.as_str()
+            ),
+            None => format!("device `{}` connected", connection.device_id.as_str()),
+        },
+    );
+
+    let scan = state
+        .core
+        .scan_devices()
+        .await
+        .map_err(|error| error.to_string())?;
     sync_active_coyote_v3_output_devices(&runtime_state, &scan);
 
     Ok(device_scan_response(scan))
@@ -1644,6 +1681,18 @@ fn submit_wave_window_response(
     }
 }
 
+fn platform_ble_provider() -> Arc<dyn TauriBlePlatformProvider> {
+    #[cfg(feature = "native-ble")]
+    {
+        return Arc::new(NativeBlePlatformProvider::new());
+    }
+
+    #[cfg(not(feature = "native-ble"))]
+    {
+        Arc::new(arcflow_tauri_platform::UnsupportedTauriBlePlatformProvider)
+    }
+}
+
 /// Runs the shared ArcFlow Tauri application with a platform app context.
 pub fn run<R>(context: tauri::Context<R>)
 where
@@ -1666,10 +1715,11 @@ where
             };
             let (script_event_sender, script_events) = mpsc::unbounded_channel();
             let (output_event_sender, output_events) = mpsc::unbounded_channel();
-            let ble_platform_provider = Arc::new(UnsupportedTauriBlePlatformProvider);
+            let ble_platform_provider = platform_ble_provider();
             let discovery_provider: Arc<dyn TauriBleDiscoveryProvider> =
                 ble_platform_provider.clone();
-            let ble_transport_provider: Arc<dyn TauriBleTransportProvider> = ble_platform_provider;
+            let ble_transport_provider: Arc<dyn TauriBleTransportProvider> =
+                ble_platform_provider.clone();
             let discovery_controller: Arc<dyn DeviceDiscoveryController> = Arc::new(
                 TauriBleDiscoveryController::with_provider(discovery_provider),
             );
@@ -1711,6 +1761,7 @@ where
             });
             app.manage(RuntimeState {
                 discovery_controller: Arc::clone(&discovery_controller),
+                ble_platform_provider: Arc::clone(&ble_platform_provider),
                 output_controller,
                 output_host: Arc::clone(&core_output_controller),
                 output_sink,
@@ -1748,6 +1799,7 @@ where
             delete_script,
             run_script,
             scan_devices,
+            connect_device,
             stop_output,
             activate_output_device,
             deactivate_output_device,
@@ -1774,7 +1826,9 @@ mod tests {
 
     use arcflow_external_control::{ClientHello, PROTOCOL_VERSION};
     use arcflow_plugin_runtime::{PluginManifest, PluginRegistry};
-    use arcflow_tauri_platform::UnsupportedTauriBleTransportProvider;
+    use arcflow_tauri_platform::{
+        UnsupportedTauriBlePlatformProvider, UnsupportedTauriBleTransportProvider,
+    };
     use tokio::sync::Mutex as AsyncMutex;
 
     use super::*;
@@ -1826,6 +1880,7 @@ mod tests {
         );
         let runtime = RuntimeState {
             discovery_controller,
+            ble_platform_provider: Arc::new(UnsupportedTauriBlePlatformProvider),
             output_controller,
             output_host: core_output_controller,
             output_sink,
@@ -2165,6 +2220,7 @@ mod tests {
         output_controller.attach_device(DeviceId::new("kept-v3"));
         let runtime = RuntimeState {
             discovery_controller,
+            ble_platform_provider: Arc::new(UnsupportedTauriBlePlatformProvider),
             output_controller,
             output_host,
             output_sink,

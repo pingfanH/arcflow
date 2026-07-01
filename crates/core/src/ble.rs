@@ -94,6 +94,10 @@ pub struct BleAdvertisement {
     pub rssi: Option<i16>,
     /// Advertised service short UUIDs.
     pub service_uuids: Vec<u16>,
+    /// Battery percentage if the platform already knows it.
+    pub battery_percent: Option<u8>,
+    /// Whether the platform reports an active BLE connection.
+    pub connected: bool,
 }
 
 impl BleAdvertisement {
@@ -110,7 +114,23 @@ impl BleAdvertisement {
             local_name,
             rssi,
             service_uuids,
+            battery_percent: None,
+            connected: true,
         }
+    }
+
+    /// Returns the advertisement with platform-known battery percentage.
+    #[must_use]
+    pub fn with_battery_percent(mut self, battery_percent: Option<u8>) -> Self {
+        self.battery_percent = battery_percent;
+        self
+    }
+
+    /// Returns the advertisement with platform connection state.
+    #[must_use]
+    pub fn with_connected(mut self, connected: bool) -> Self {
+        self.connected = connected;
+        self
     }
 }
 
@@ -186,8 +206,8 @@ fn device_status_from_advertisement(advertisement: BleAdvertisement) -> Option<D
     coyote_model_from_services(&advertisement.service_uuids).map(|model| DeviceStatus {
         id: advertisement.device_id,
         model,
-        battery_percent: None,
-        connected: true,
+        battery_percent: advertisement.battery_percent,
+        connected: advertisement.connected,
     })
 }
 
@@ -275,6 +295,8 @@ mod tests {
         assert_eq!(advertisement.local_name, Some("Coyote".to_owned()));
         assert_eq!(advertisement.rssi, Some(-42));
         assert_eq!(advertisement.service_uuids, vec![COYOTE_V3_SERVICE_UUID]);
+        assert_eq!(advertisement.battery_percent, None);
+        assert!(advertisement.connected);
     }
 
     #[derive(Debug)]
@@ -319,7 +341,9 @@ mod tests {
                     Some("Coyote".to_owned()),
                     Some(-41),
                     vec![COYOTE_V3_SERVICE_UUID],
-                ),
+                )
+                .with_battery_percent(Some(87))
+                .with_connected(false),
                 BleAdvertisement::new(
                     DeviceId::new("v2"),
                     Some("Coyote 2".to_owned()),
@@ -344,8 +368,8 @@ mod tests {
                 DeviceStatus {
                     id: DeviceId::new("v3"),
                     model: DeviceModel::CoyoteV3,
-                    battery_percent: None,
-                    connected: true,
+                    battery_percent: Some(87),
+                    connected: false,
                 },
                 DeviceStatus {
                     id: DeviceId::new("v2"),

@@ -437,6 +437,19 @@ function App() {
       .finally(() => setOutputDeviceBusyId(null));
   };
 
+  const connectDevice = (deviceId: string) => {
+    setOutputDeviceBusyId(deviceId);
+    invoke<DeviceScanResponse>("connect_device", { deviceId })
+      .then((result) => {
+        setLastScan(result);
+        setDeviceOnline(result.devices.some((device) => device.connected));
+        refreshRuntimeStatus();
+        refreshRuntimeEvents();
+      })
+      .catch((error) => setWaveError(String(error)))
+      .finally(() => setOutputDeviceBusyId(null));
+  };
+
   const stopOutput = () => {
     setStopBusy(true);
     invoke<StopOutputResponse>("stop_output")
@@ -708,6 +721,7 @@ function App() {
                     busyDeviceId={outputDeviceBusyId}
                     devices={lastScan?.devices ?? []}
                     onActivate={activateOutputDevice}
+                    onConnect={connectDevice}
                     onDeactivate={deactivateOutputDevice}
                   />
                 </section>
@@ -936,6 +950,7 @@ type DeviceListProps = {
   busyDeviceId: string | null;
   devices: DeviceSummary[];
   onActivate: (deviceId: string) => void;
+  onConnect: (deviceId: string) => void;
   onDeactivate: (deviceId: string) => void;
 };
 
@@ -944,6 +959,7 @@ function DeviceList({
   busyDeviceId,
   devices,
   onActivate,
+  onConnect,
   onDeactivate,
 }: DeviceListProps) {
   if (devices.length === 0) {
@@ -960,6 +976,12 @@ function DeviceList({
         const outputActive = activeOutputDeviceIds.includes(device.id);
         const supportsOutput = device.connected && device.model === "coyoteV3";
         const busy = busyDeviceId === device.id;
+        const actionTitle = !device.connected
+          ? "Connect device"
+          : outputActive
+            ? "Deactivate output"
+            : "Activate output";
+        const ActionIcon = device.connected ? Power : Bluetooth;
 
         return (
           <div
@@ -996,18 +1018,20 @@ function DeviceList({
                   ? "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
                   : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100"
               }`}
-              disabled={!supportsOutput || busy}
-              title={outputActive ? "Deactivate output" : "Activate output"}
+              disabled={(device.connected && !supportsOutput) || busy}
+              title={actionTitle}
               type="button"
               onClick={() => {
-                if (outputActive) {
+                if (!device.connected) {
+                  onConnect(device.id);
+                } else if (outputActive) {
                   onDeactivate(device.id);
                 } else {
                   onActivate(device.id);
                 }
               }}
             >
-              <Power size={16} />
+              <ActionIcon size={16} />
             </button>
           </div>
         );
