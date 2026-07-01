@@ -20,7 +20,6 @@ import {
   ToggleLeft,
   ToggleRight,
   Trash2,
-  Wifi,
   Zap,
 } from "lucide-react";
 import "./App.css";
@@ -129,9 +128,7 @@ type ScriptRunResponse = {
 const navItems = [
   { id: "device", label: "Device", icon: Bluetooth },
   { id: "wave", label: "Wave", icon: Activity },
-  { id: "scripts", label: "Scripts", icon: FileCode },
   { id: "plugins", label: "Plugins", icon: Puzzle },
-  { id: "external", label: "External", icon: Wifi },
 ] as const;
 
 const waveBars = [28, 44, 62, 76, 68, 52, 34, 48, 72, 84, 58, 38];
@@ -156,7 +153,7 @@ const shellClasses = {
     frame: "flex min-h-screen",
     sideNav: "hidden",
     mobileNav:
-      "fixed inset-x-0 bottom-0 z-20 grid grid-cols-5 gap-1 border-t border-zinc-200 bg-white/95 px-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-[0_-8px_24px_rgba(24,24,27,0.08)] backdrop-blur",
+      "fixed inset-x-0 bottom-0 z-20 grid grid-cols-3 gap-1 border-t border-zinc-200 bg-white/95 px-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] pt-2 shadow-[0_-8px_24px_rgba(24,24,27,0.08)] backdrop-blur",
     content: "flex min-w-0 flex-1 flex-col",
     header:
       "sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-white/95 px-4 py-3 backdrop-blur",
@@ -998,7 +995,7 @@ function ScriptsPanel({
           <FileCode size={18} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-zinc-950">Scripts</div>
+          <div className="text-sm font-medium text-zinc-950">Plugin Automations</div>
           <div className="truncate text-sm text-zinc-500">
             {scripts.scripts.length} saved
             {lastRun ? ` - ${lastRun.queued ? "Queued" : "Accepted"}` : ""}
@@ -1007,7 +1004,7 @@ function ScriptsPanel({
         <button
           className="grid size-9 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={busy}
-          title="Refresh scripts"
+          title="Refresh plugin automations"
           type="button"
           onClick={onRefresh}
         >
@@ -1016,7 +1013,7 @@ function ScriptsPanel({
         <button
           className="grid size-9 place-items-center rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={busy || starterSaved}
-          title="Save starter script"
+          title="Save starter plugin automation"
           type="button"
           onClick={onSaveStarter}
         >
@@ -1027,7 +1024,7 @@ function ScriptsPanel({
       <div className="mt-3 space-y-2">
         {scripts.scripts.length === 0 ? (
           <div className="rounded-lg bg-zinc-50 px-3 py-2 text-sm text-zinc-500">
-            No scripts saved
+            No plugin automations saved
           </div>
         ) : (
           scripts.scripts.map((script) => (
@@ -1044,7 +1041,7 @@ function ScriptsPanel({
                 <button
                   className="grid size-8 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={busy}
-                  title="Run script"
+                  title="Run plugin automation"
                   type="button"
                   onClick={() => onRun(script.scriptId)}
                 >
@@ -1053,7 +1050,7 @@ function ScriptsPanel({
                 <button
                   className="grid size-8 place-items-center rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={busy}
-                  title="Delete script"
+                  title="Delete plugin automation"
                   type="button"
                   onClick={() => onDelete(script.scriptId)}
                 >
@@ -1104,7 +1101,7 @@ function PluginRegistryPanel({
           <Puzzle size={18} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-zinc-950">Plugins</div>
+          <div className="text-sm font-medium text-zinc-950">Plugin Runtime</div>
           <div className="truncate text-sm text-zinc-500">
             {registry.plugins.length} installed - {runtimes.join(" / ")}
           </div>
@@ -1266,7 +1263,7 @@ function ExternalControlPanel({
           <Radio size={18} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-zinc-950">External WS</div>
+          <div className="text-sm font-medium text-zinc-950">Plugin Bridge</div>
           <div className="truncate text-sm text-zinc-500">
             {running ? `${bind} - ${modeLabel}` : modeLabel}
           </div>
@@ -1278,7 +1275,7 @@ function ExternalControlPanel({
               : "border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50"
           } disabled:cursor-not-allowed disabled:opacity-50`}
           disabled={busy || running}
-          title={effectiveControlMode ? "Use read-only WebSocket" : "Allow WebSocket control"}
+          title={effectiveControlMode ? "Use read-only plugin bridge" : "Allow plugin bridge control"}
           type="button"
           onClick={() => onControlModeChange(!controlMode)}
         >
@@ -1291,7 +1288,7 @@ function ExternalControlPanel({
               : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
           } disabled:cursor-not-allowed disabled:opacity-50`}
           disabled={busy}
-          title={running ? "Stop external WebSocket" : "Start external WebSocket"}
+          title={running ? "Stop plugin bridge" : "Start plugin bridge"}
           type="button"
           onClick={running ? onStop : onStart}
         >

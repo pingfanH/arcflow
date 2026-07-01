@@ -1,12 +1,12 @@
-# External WebSocket Control
+# Plugin WebSocket Bridge
 
-ArcFlow exposes a local WebSocket gateway for trusted external software. The
-gateway is local-first and capability-gated: clients can only call methods for
-capabilities granted during the initial hello.
+ArcFlow exposes a local WebSocket bridge under the plugin domain for trusted
+external software. The bridge is local-first and capability-gated: clients can
+only call methods for capabilities granted during the initial hello.
 
 ## Connection
 
-The desktop app starts the gateway through the `start_external_control` Tauri
+The desktop app starts the bridge through the `start_external_control` Tauri
 command. The default bind is local-only:
 
 ```text
@@ -43,7 +43,7 @@ rejected before JSON-RPC traffic starts.
 
 ## Capabilities
 
-Current capability strings:
+Current plugin capability strings:
 
 ```text
 device.read
@@ -58,10 +58,10 @@ events.subscribe
 external.ws
 ```
 
-The default local policy is intentionally conservative. Read-only mode grants
-`device.read` and `events.subscribe`. The UI can explicitly start the gateway in
+The default local policy is intentionally conservative. Read-only bridge mode grants
+`device.read` and `events.subscribe`. The UI can explicitly start the bridge in
 control mode, which additionally allows `wave.control`, `script.run`,
-`script.manage`, and `plugin.manage`. A running gateway keeps the policy it was
+`script.manage`, and `plugin.manage`. A running bridge keeps the policy it was
 started with; stop and restart it to switch modes.
 
 Plugin registry mutations are persisted in SQLite and synchronized into the
