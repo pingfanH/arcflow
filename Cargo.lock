@@ -67,18 +67,10 @@ dependencies = [
 name = "arcflow-desktop"
 version = "0.1.0"
 dependencies = [
- "arcflow-core",
- "arcflow-external-control",
- "arcflow-plugin-runtime",
- "arcflow-script",
- "arcflow-storage",
- "arcflow-tauri-platform",
- "serde",
- "serde_json",
+ "arcflow-tauri-app",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
- "tokio",
 ]
 
 [[package]]
@@ -91,6 +83,16 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+]
+
+[[package]]
+name = "arcflow-mobile"
+version = "0.1.0"
+dependencies = [
+ "arcflow-tauri-app",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-opener",
 ]
 
 [[package]]
@@ -120,6 +122,23 @@ name = "arcflow-storage"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
+]
+
+[[package]]
+name = "arcflow-tauri-app"
+version = "0.1.0"
+dependencies = [
+ "arcflow-core",
+ "arcflow-external-control",
+ "arcflow-plugin-runtime",
+ "arcflow-script",
+ "arcflow-storage",
+ "arcflow-tauri-platform",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin-opener",
+ "tokio",
 ]
 
 [[package]]

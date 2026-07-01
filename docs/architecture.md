@@ -47,6 +47,8 @@ through Rust Core and capability checks before any device-facing operation.
 - `crates/storage`: SQLite schema and Rust-owned stores for plugin data,
   installed plugins, and scripts.
 - `crates/external-control`: local WebSocket protocol and gateway.
+- `crates/tauri-app`: shared Tauri 2 command/state wiring used by desktop and
+  mobile shells.
 
 ## Device Flow
 
@@ -56,6 +58,10 @@ writes through `CoyoteV3CommandBuilder`, and sends bytes through `BleTransport`.
 
 Bluetooth logic must stay in Rust. The future web target may add a separate Web
 Bluetooth implementation, but desktop and mobile use Tauri 2 and Rust.
+
+Desktop and mobile Tauri shells are intentionally thin. Each shell owns its
+`tauri.conf.json` and platform entrypoint, then calls the shared
+`arcflow-tauri-app` runtime.
 
 ## Plugin And External Control
 

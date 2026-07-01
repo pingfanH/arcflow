@@ -1,12 +1,14 @@
 [workspace]
 members = [
     "apps/desktop/src-tauri",
+    "apps/mobile/src-tauri",
     "crates/core",
     "crates/external-control",
     "crates/plugin-runtime",
     "crates/protocol",
     "crates/script",
     "crates/storage",
+    "crates/tauri-app",
     "crates/tauri-platform",
     "crates/wave",
 ]
@@ -22,6 +24,7 @@ arcflow-plugin-runtime = { path = "crates/plugin-runtime" }
 arcflow-protocol = { path = "crates/protocol" }
 arcflow-script = { path = "crates/script" }
 arcflow-storage = { path = "crates/storage" }
+arcflow-tauri-app = { path = "crates/tauri-app" }
 arcflow-tauri-platform = { path = "crates/tauri-platform" }
 arcflow-wave = { path = "crates/wave" }
 async-trait = "0.1"
