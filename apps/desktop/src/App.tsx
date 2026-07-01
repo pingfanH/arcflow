@@ -67,6 +67,16 @@ type RuntimeStatus = {
   bleOutputFailed: number;
 };
 
+type RuntimeEventRecord = {
+  sequence: number;
+  kind: string;
+  message: string;
+};
+
+type RuntimeEventsResponse = {
+  events: RuntimeEventRecord[];
+};
+
 type PluginRegistryEntry = {
   id: string;
   name: string;
@@ -129,6 +139,10 @@ const fallbackRuntimeStatus: RuntimeStatus = {
   bleOutputFailed: 0,
 };
 
+const emptyRuntimeEvents: RuntimeEventsResponse = {
+  events: [],
+};
+
 const emptyPluginRegistry: PluginRegistryResponse = {
   plugins: [],
 };
@@ -165,6 +179,7 @@ function App() {
   const [lastScan, setLastScan] = useState<DeviceScanResponse | null>(null);
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
+  const [runtimeEvents, setRuntimeEvents] = useState<RuntimeEventsResponse | null>(null);
   const [pluginRegistry, setPluginRegistry] = useState<PluginRegistryResponse | null>(null);
   const [scripts, setScripts] = useState<ScriptsResponse | null>(null);
   const [lastScriptRun, setLastScriptRun] = useState<ScriptRunResponse | null>(null);
@@ -195,6 +210,12 @@ function App() {
       .catch(() => setRuntimeStatus(fallbackRuntimeStatus));
   }, []);
 
+  const refreshRuntimeEvents = useCallback(() => {
+    invoke<RuntimeEventsResponse>("runtime_events")
+      .then(setRuntimeEvents)
+      .catch(() => setRuntimeEvents(emptyRuntimeEvents));
+  }, []);
+
   const refreshScripts = useCallback(() => {
     invoke<ScriptsResponse>("list_scripts")
       .then(setScripts)
@@ -218,9 +239,16 @@ function App() {
       .then(setStorageStatus)
       .catch(() => setStorageStatus(fallbackStorageStatus));
     refreshRuntimeStatus();
+    refreshRuntimeEvents();
     refreshPluginRegistry();
     refreshScripts();
-  }, [refreshExternalStatus, refreshPluginRegistry, refreshRuntimeStatus, refreshScripts]);
+  }, [
+    refreshExternalStatus,
+    refreshPluginRegistry,
+    refreshRuntimeEvents,
+    refreshRuntimeStatus,
+    refreshScripts,
+  ]);
 
   const startExternalControl = () => {
     setExternalBusy(true);
@@ -258,6 +286,7 @@ function App() {
       .then(() => {
         setPlaying(false);
         refreshRuntimeStatus();
+        refreshRuntimeEvents();
       })
       .catch(() => setPlaying(false))
       .finally(() => setStopBusy(false));
@@ -496,6 +525,10 @@ function App() {
                 }/${runtimeStatus?.bleOutputWritten ?? 0}/${runtimeStatus?.bleOutputFailed ?? 0}`}
                 tone="sky"
               />
+              <RuntimeEventsPanel
+                events={runtimeEvents ?? emptyRuntimeEvents}
+                onRefresh={refreshRuntimeEvents}
+              />
               <ExternalControlPanel
                 defaultBind={status?.externalControlBind ?? "127.0.0.1:0"}
                 busy={externalBusy}
@@ -518,6 +551,50 @@ function App() {
         </section>
       </div>
     </main>
+  );
+}
+
+type RuntimeEventsPanelProps = {
+  events: RuntimeEventsResponse;
+  onRefresh: () => void;
+};
+
+function RuntimeEventsPanel({ events, onRefresh }: RuntimeEventsPanelProps) {
+  const recentEvents = events.events.slice(-3).reverse();
+
+  return (
+    <div className="min-w-0 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+      <div className="flex items-center gap-3">
+        <div className="grid size-10 place-items-center rounded-lg bg-emerald-50 text-emerald-700">
+          <Activity size={18} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-zinc-950">Runtime Events</div>
+          <div className="truncate text-sm text-zinc-500">{events.events.length} recent</div>
+        </div>
+        <button
+          className="grid size-9 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50"
+          title="Refresh runtime events"
+          type="button"
+          onClick={onRefresh}
+        >
+          <RefreshCw size={16} />
+        </button>
+      </div>
+
+      <div className="mt-3 space-y-2">
+        {recentEvents.length === 0 ? (
+          <div className="rounded-lg bg-zinc-50 px-3 py-2 text-sm text-zinc-500">No events</div>
+        ) : (
+          recentEvents.map((event) => (
+            <div key={event.sequence} className="rounded-lg bg-zinc-50 px-3 py-2">
+              <div className="truncate text-sm font-medium text-zinc-950">{event.kind}</div>
+              <div className="truncate text-xs text-zinc-500">{event.message}</div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
   );
 }
 
