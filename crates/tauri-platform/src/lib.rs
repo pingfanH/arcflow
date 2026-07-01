@@ -12,5 +12,6 @@ pub use ble::{
 };
 pub use transport::{
     TauriBleOutputCommand, TauriBleOutputEvent, TauriBleOutputSink, TauriBleOutputStats,
-    TauriBleTransport, TauriBleTransportProvider, UnsupportedTauriBleTransportProvider,
+    TauriBleSubscriptionRequest, TauriBleTransport, TauriBleTransportProvider,
+    TauriBleWriteRequest, UnsupportedTauriBleTransportProvider,
 };

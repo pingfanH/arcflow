@@ -22,7 +22,8 @@ use arcflow_plugin_runtime::{Capability, RecordedPlugin, RuntimeKind};
 use arcflow_script::ScriptCompiler;
 use arcflow_storage::Storage;
 use arcflow_tauri_platform::{
-    TauriBleDiscoveryController, TauriBleOutputEvent, TauriBleOutputSink, TauriBleTransport,
+    TauriBleDiscoveryController, TauriBleOutputEvent, TauriBleOutputSink,
+    UnsupportedTauriBleTransportProvider,
 };
 use serde::Serialize;
 use tauri::Manager;
@@ -951,9 +952,11 @@ where
             let (output_event_sender, output_events) = mpsc::unbounded_channel();
             let discovery_controller: Arc<dyn DeviceDiscoveryController> =
                 Arc::new(TauriBleDiscoveryController::unsupported());
-            let ble_transport = Arc::new(TauriBleTransport::unsupported());
-            let output_sink =
-                TauriBleOutputSink::spawn_with_event_sink(ble_transport, output_event_sender);
+            let ble_transport_provider = Arc::new(UnsupportedTauriBleTransportProvider);
+            let output_sink = TauriBleOutputSink::spawn_with_event_sink(
+                ble_transport_provider,
+                output_event_sender,
+            );
             let output_controller = Arc::new(CoyoteV3OutputController::new(
                 safety_limits,
                 output_sink.clone(),

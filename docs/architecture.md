@@ -55,6 +55,11 @@ through Rust Core and capability checks before any device-facing operation.
 Platform BLE adapters emit advertisements and transport operations into Rust.
 Core maps Coyote V2/V3 advertisements into `DeviceStatus`, builds safe Coyote V3
 writes through `CoyoteV3CommandBuilder`, and sends bytes through `BleTransport`.
+Core `BleTransport` remains scoped to an active device session. The Tauri
+platform provider receives device-scoped write and subscription requests so the
+real desktop/mobile BLE adapter can route operations to the correct native
+connection without exposing platform routing details back to Core, React, or
+plugins.
 
 Bluetooth logic must stay in Rust. The future web target may add a separate Web
 Bluetooth implementation, but desktop and mobile use Tauri 2 and Rust.

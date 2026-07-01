@@ -11,14 +11,51 @@ use arcflow_core::{
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
+/// Device-scoped BLE write request for Tauri platform providers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TauriBleWriteRequest {
+    /// Target platform device id.
+    pub device_id: DeviceId,
+    /// BLE write produced by Rust Core.
+    pub write: BleWrite,
+}
+
+impl TauriBleWriteRequest {
+    /// Constructs a device-scoped BLE write request.
+    #[must_use]
+    pub fn new(device_id: DeviceId, write: BleWrite) -> Self {
+        Self { device_id, write }
+    }
+}
+
+/// Device-scoped BLE notification subscription request for Tauri providers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TauriBleSubscriptionRequest {
+    /// Target platform device id.
+    pub device_id: DeviceId,
+    /// Characteristic to subscribe to.
+    pub characteristic: BleCharacteristic,
+}
+
+impl TauriBleSubscriptionRequest {
+    /// Constructs a device-scoped BLE subscription request.
+    #[must_use]
+    pub fn new(device_id: DeviceId, characteristic: BleCharacteristic) -> Self {
+        Self {
+            device_id,
+            characteristic,
+        }
+    }
+}
+
 /// Provider used by the Tauri BLE transport to perform platform writes.
 #[async_trait]
 pub trait TauriBleTransportProvider: fmt::Debug + Send + Sync {
-    /// Writes bytes to a platform BLE characteristic.
-    async fn write(&self, write: BleWrite) -> Result<(), CoreError>;
+    /// Writes bytes to a platform BLE characteristic on a device.
+    async fn write(&self, request: TauriBleWriteRequest) -> Result<(), CoreError>;
 
-    /// Subscribes to notifications for a platform BLE characteristic.
-    async fn subscribe(&self, characteristic: BleCharacteristic) -> Result<(), CoreError>;
+    /// Subscribes to notifications for a platform BLE characteristic on a device.
+    async fn subscribe(&self, request: TauriBleSubscriptionRequest) -> Result<(), CoreError>;
 }
 
 /// Provider used until real platform BLE transport is attached.
@@ -27,13 +64,13 @@ pub struct UnsupportedTauriBleTransportProvider;
 
 #[async_trait]
 impl TauriBleTransportProvider for UnsupportedTauriBleTransportProvider {
-    async fn write(&self, _write: BleWrite) -> Result<(), CoreError> {
+    async fn write(&self, _request: TauriBleWriteRequest) -> Result<(), CoreError> {
         Err(CoreError::Transport(
             "tauri BLE transport is not configured".to_owned(),
         ))
     }
 
-    async fn subscribe(&self, _characteristic: BleCharacteristic) -> Result<(), CoreError> {
+    async fn subscribe(&self, _request: TauriBleSubscriptionRequest) -> Result<(), CoreError> {
         Err(CoreError::Transport(
             "tauri BLE transport is not configured".to_owned(),
         ))
@@ -43,31 +80,48 @@ impl TauriBleTransportProvider for UnsupportedTauriBleTransportProvider {
 /// BLE transport used by Tauri 2 desktop and mobile shells.
 #[derive(Debug, Clone)]
 pub struct TauriBleTransport {
+    device_id: DeviceId,
     provider: Arc<dyn TauriBleTransportProvider>,
 }
 
 impl TauriBleTransport {
-    /// Constructs an unsupported Tauri BLE transport.
+    /// Constructs an unsupported Tauri BLE transport for a device.
     #[must_use]
-    pub fn unsupported() -> Self {
-        Self::with_provider(Arc::new(UnsupportedTauriBleTransportProvider))
+    pub fn unsupported(device_id: DeviceId) -> Self {
+        Self::for_device(device_id, Arc::new(UnsupportedTauriBleTransportProvider))
     }
 
-    /// Constructs a Tauri BLE transport with an explicit provider.
+    /// Constructs a Tauri BLE transport for a device with an explicit provider.
     #[must_use]
-    pub fn with_provider(provider: Arc<dyn TauriBleTransportProvider>) -> Self {
-        Self { provider }
+    pub fn for_device(device_id: DeviceId, provider: Arc<dyn TauriBleTransportProvider>) -> Self {
+        Self {
+            device_id,
+            provider,
+        }
+    }
+
+    /// Returns the platform device id this transport is scoped to.
+    #[must_use]
+    pub fn device_id(&self) -> &DeviceId {
+        &self.device_id
     }
 }
 
 #[async_trait]
 impl BleTransport for TauriBleTransport {
     async fn write(&self, write: BleWrite) -> Result<(), CoreError> {
-        self.provider.write(write).await
+        self.provider
+            .write(TauriBleWriteRequest::new(self.device_id.clone(), write))
+            .await
     }
 
     async fn subscribe(&self, characteristic: BleCharacteristic) -> Result<(), CoreError> {
-        self.provider.subscribe(characteristic).await
+        self.provider
+            .subscribe(TauriBleSubscriptionRequest::new(
+                self.device_id.clone(),
+                characteristic,
+            ))
+            .await
     }
 }
 
@@ -81,21 +135,21 @@ pub struct TauriBleOutputSink {
 impl TauriBleOutputSink {
     /// Spawns an output sink worker.
     #[must_use]
-    pub fn spawn(transport: Arc<dyn BleTransport + Send + Sync>) -> Self {
-        Self::spawn_with_events(transport, None)
+    pub fn spawn(provider: Arc<dyn TauriBleTransportProvider>) -> Self {
+        Self::spawn_with_events(provider, None)
     }
 
     /// Spawns an output sink worker with an optional event sink for tests.
     #[must_use]
     pub fn spawn_with_event_sink(
-        transport: Arc<dyn BleTransport + Send + Sync>,
+        provider: Arc<dyn TauriBleTransportProvider>,
         event_sink: mpsc::UnboundedSender<TauriBleOutputEvent>,
     ) -> Self {
-        Self::spawn_with_events(transport, Some(event_sink))
+        Self::spawn_with_events(provider, Some(event_sink))
     }
 
     fn spawn_with_events(
-        transport: Arc<dyn BleTransport + Send + Sync>,
+        provider: Arc<dyn TauriBleTransportProvider>,
         event_sink: Option<mpsc::UnboundedSender<TauriBleOutputEvent>>,
     ) -> Self {
         let (sender, mut receiver) = mpsc::unbounded_channel::<TauriBleOutputCommand>();
@@ -104,7 +158,9 @@ impl TauriBleOutputSink {
 
         tokio::spawn(async move {
             while let Some(command) = receiver.recv().await {
-                let event = match transport.write(command.write.clone()).await {
+                let request =
+                    TauriBleWriteRequest::new(command.device_id.clone(), command.write.clone());
+                let event = match provider.write(request).await {
                     Ok(()) => {
                         worker_stats
                             .lock()
@@ -216,26 +272,26 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct RecordingTransportProvider {
-        writes: Mutex<Vec<BleWrite>>,
-        subscriptions: Mutex<Vec<BleCharacteristic>>,
+        writes: Mutex<Vec<TauriBleWriteRequest>>,
+        subscriptions: Mutex<Vec<TauriBleSubscriptionRequest>>,
     }
 
     #[async_trait]
     impl TauriBleTransportProvider for RecordingTransportProvider {
-        async fn write(&self, write: BleWrite) -> Result<(), CoreError> {
-            self.writes.lock().unwrap().push(write);
+        async fn write(&self, request: TauriBleWriteRequest) -> Result<(), CoreError> {
+            self.writes.lock().unwrap().push(request);
             Ok(())
         }
 
-        async fn subscribe(&self, characteristic: BleCharacteristic) -> Result<(), CoreError> {
-            self.subscriptions.lock().unwrap().push(characteristic);
+        async fn subscribe(&self, request: TauriBleSubscriptionRequest) -> Result<(), CoreError> {
+            self.subscriptions.lock().unwrap().push(request);
             Ok(())
         }
     }
 
     #[tokio::test]
     async fn unsupported_transport_rejects_operations() {
-        let transport = TauriBleTransport::unsupported();
+        let transport = TauriBleTransport::unsupported(DeviceId::new("coyote-v3"));
 
         let write_error = transport
             .write(BleWrite::new(BleCharacteristic::CoyoteV3Write, [0xBF]))
@@ -253,7 +309,7 @@ mod tests {
     #[tokio::test]
     async fn transport_delegates_to_provider() {
         let provider = Arc::new(RecordingTransportProvider::default());
-        let transport = TauriBleTransport::with_provider(provider.clone());
+        let transport = TauriBleTransport::for_device(DeviceId::new("coyote-v3"), provider.clone());
 
         transport
             .write(BleWrite::new(BleCharacteristic::CoyoteV3Write, [0xB0]))
@@ -264,19 +320,27 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(provider.writes.lock().unwrap().len(), 1);
+        assert_eq!(
+            *provider.writes.lock().unwrap(),
+            vec![TauriBleWriteRequest::new(
+                DeviceId::new("coyote-v3"),
+                BleWrite::new(BleCharacteristic::CoyoteV3Write, [0xB0])
+            )]
+        );
         assert_eq!(
             *provider.subscriptions.lock().unwrap(),
-            vec![BleCharacteristic::CoyoteV3Notify]
+            vec![TauriBleSubscriptionRequest::new(
+                DeviceId::new("coyote-v3"),
+                BleCharacteristic::CoyoteV3Notify
+            )]
         );
     }
 
     #[tokio::test]
-    async fn output_sink_queues_writes_to_transport() {
+    async fn output_sink_queues_device_scoped_writes_to_provider() {
         let provider = Arc::new(RecordingTransportProvider::default());
-        let transport = Arc::new(TauriBleTransport::with_provider(provider.clone()));
         let (event_sender, mut events) = mpsc::unbounded_channel();
-        let sink = TauriBleOutputSink::spawn_with_event_sink(transport, event_sender);
+        let sink = TauriBleOutputSink::spawn_with_event_sink(provider.clone(), event_sender);
 
         sink.write(
             &DeviceId::new("coyote-v3"),
@@ -295,7 +359,13 @@ mod tests {
                 characteristic: BleCharacteristic::CoyoteV3Write,
             }
         );
-        assert_eq!(provider.writes.lock().unwrap().len(), 1);
+        assert_eq!(
+            *provider.writes.lock().unwrap(),
+            vec![TauriBleWriteRequest::new(
+                DeviceId::new("coyote-v3"),
+                BleWrite::new(BleCharacteristic::CoyoteV3Write, [0xB0])
+            )]
+        );
         assert_eq!(
             sink.stats(),
             TauriBleOutputStats {
