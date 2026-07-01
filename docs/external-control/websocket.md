@@ -258,6 +258,34 @@ Subscribed clients also receive pushed event envelopes:
 }
 ```
 
+### `runtime.plugins`
+
+Required capability: `plugin.manage`
+
+Returns the plugins currently loaded into the sandboxed WASM/JavaScript runtime.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "method": "runtime.plugins"
+}
+```
+
+Example result:
+
+```json
+{
+  "plugins": [
+    {
+      "pluginId": "dev.arcflow.example",
+      "runtime": "wasm",
+      "entry": "dist/plugin.wasm"
+    }
+  ]
+}
+```
+
 ### `plugin.registry`
 
 Required capability: `plugin.manage`
@@ -265,7 +293,7 @@ Required capability: `plugin.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 10,
+  "id": 11,
   "method": "plugin.registry"
 }
 ```
@@ -277,7 +305,7 @@ Required capability: `plugin.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 11,
+  "id": 12,
   "method": "plugin.installManifest",
   "params": {
     "manifestJson": "{\"id\":\"dev.arcflow.example\",\"name\":\"Example\",\"version\":\"0.1.0\",\"runtime\":\"wasm\",\"entry\":\"dist/plugin.wasm\",\"apiVersion\":\"1\",\"capabilities\":[\"device.read\"]}"
@@ -292,7 +320,7 @@ Required capability: `plugin.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 12,
+  "id": 13,
   "method": "plugin.setEnabled",
   "params": {
     "pluginId": "dev.arcflow.example",
@@ -311,7 +339,7 @@ enabled.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 13,
+  "id": 14,
   "method": "plugin.delete",
   "params": {
     "pluginId": "dev.arcflow.example"

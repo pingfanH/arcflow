@@ -18,7 +18,7 @@ use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, ServerEvent,
     WsGatewayHandle, WsGatewayService, WsRequestHandler, DEFAULT_LOCAL_BIND,
 };
-use arcflow_plugin_runtime::Capability;
+use arcflow_plugin_runtime::{Capability, RecordedPlugin, RuntimeKind};
 use arcflow_script::ScriptCompiler;
 use arcflow_storage::Storage;
 use arcflow_tauri_platform::{
@@ -57,6 +57,7 @@ struct PluginRuntimeState {
 
 const RUNTIME_STATUS_METHOD: &str = "runtime.status";
 const RUNTIME_EVENTS_METHOD: &str = "runtime.events";
+const RUNTIME_PLUGINS_METHOD: &str = "runtime.plugins";
 const RUNTIME_EVENT_LIMIT: usize = 128;
 
 #[derive(Clone)]
@@ -201,6 +202,20 @@ struct RuntimeEventsResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RuntimePluginsResponse {
+    plugins: Vec<RuntimePluginSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimePluginSnapshot {
+    plugin_id: String,
+    runtime: RuntimeKind,
+    entry: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct PluginRegistryResponse {
     plugins: Vec<PluginRegistryEntry>,
 }
@@ -257,6 +272,13 @@ async fn runtime_status(
 #[tauri::command]
 fn runtime_events(state: tauri::State<'_, RuntimeState>) -> RuntimeEventsResponse {
     runtime_events_from_state(&state)
+}
+
+#[tauri::command]
+async fn runtime_plugins(
+    plugin_runtime: tauri::State<'_, PluginRuntimeState>,
+) -> Result<RuntimePluginsResponse, String> {
+    Ok(runtime_plugins_from_state(plugin_runtime.inner()).await)
 }
 
 #[tauri::command]
@@ -613,6 +635,16 @@ fn external_request_handler(
                 };
             }
 
+            if request.method == RUNTIME_PLUGINS_METHOD {
+                let response =
+                    execute_runtime_plugins_external_request(&session, &plugin_runtime).await;
+
+                return match response {
+                    Ok(result) => JsonRpcResponse::ok(id, result),
+                    Err(error) => JsonRpcResponse::error(id, error),
+                };
+            }
+
             match core.execute_external_request(&session, &request).await {
                 Ok(result) => JsonRpcResponse::ok(id, result),
                 Err(error) => JsonRpcResponse::error(id, RpcError::new(-32000, error.to_string())),
@@ -654,6 +686,21 @@ async fn execute_runtime_status_external_request(
         .map_err(|error| RpcError::new(-32000, error.to_string()))
 }
 
+async fn execute_runtime_plugins_external_request(
+    session: &ClientSession,
+    plugin_runtime: &PluginRuntimeState,
+) -> Result<serde_json::Value, RpcError> {
+    if !session.has_capability(Capability::PluginManage) {
+        return Err(plugin_manage_capability_error(
+            session,
+            RUNTIME_PLUGINS_METHOD,
+        ));
+    }
+
+    serde_json::to_value(runtime_plugins_from_state(plugin_runtime).await)
+        .map_err(|error| RpcError::new(-32000, error.to_string()))
+}
+
 fn runtime_read_capability_error(session: &ClientSession, method: &str) -> RpcError {
     RpcError::new(
         -32000,
@@ -661,6 +708,18 @@ fn runtime_read_capability_error(session: &ClientSession, method: &str) -> RpcEr
             "session `{}` is missing required capability `{}` for `{}`",
             session.client_name(),
             Capability::DeviceRead.as_str(),
+            method
+        ),
+    )
+}
+
+fn plugin_manage_capability_error(session: &ClientSession, method: &str) -> RpcError {
+    RpcError::new(
+        -32000,
+        format!(
+            "session `{}` is missing required capability `{}` for `{}`",
+            session.client_name(),
+            Capability::PluginManage.as_str(),
             method
         ),
     )
@@ -690,6 +749,27 @@ async fn loaded_plugin_count(plugin_runtime: &PluginRuntimeState) -> usize {
         .await
         .loaded_plugins()
         .len()
+}
+
+async fn runtime_plugins_from_state(plugin_runtime: &PluginRuntimeState) -> RuntimePluginsResponse {
+    RuntimePluginsResponse {
+        plugins: plugin_runtime
+            .controller
+            .lock()
+            .await
+            .loaded_plugins()
+            .into_iter()
+            .map(runtime_plugin_snapshot)
+            .collect(),
+    }
+}
+
+fn runtime_plugin_snapshot(plugin: RecordedPlugin) -> RuntimePluginSnapshot {
+    RuntimePluginSnapshot {
+        plugin_id: plugin.plugin_id,
+        runtime: plugin.runtime,
+        entry: plugin.entry,
+    }
 }
 
 fn runtime_events_from_state(runtime: &RuntimeState) -> RuntimeEventsResponse {
@@ -924,6 +1004,7 @@ where
             storage_status,
             runtime_status,
             runtime_events,
+            runtime_plugins,
             plugin_registry,
             install_plugin_manifest,
             install_plugin_bundle,
@@ -941,4 +1022,100 @@ where
         ])
         .run(context)
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arcflow_external_control::{ClientHello, PROTOCOL_VERSION};
+    use arcflow_plugin_runtime::{PluginManifest, PluginRegistry};
+    use tokio::sync::Mutex as AsyncMutex;
+
+    use super::*;
+
+    fn manifest(id: &str, runtime: RuntimeKind) -> PluginManifest {
+        PluginManifest {
+            id: id.to_owned(),
+            name: "Plugin".to_owned(),
+            version: "1.0.0".to_owned(),
+            runtime,
+            entry: match runtime {
+                RuntimeKind::Wasm => "dist/plugin.wasm".to_owned(),
+                RuntimeKind::JavaScript => "dist/plugin.js".to_owned(),
+            },
+            api_version: "1".to_owned(),
+            capabilities: vec![Capability::DeviceRead],
+        }
+    }
+
+    fn session_with(capabilities: Vec<Capability>) -> ClientSession {
+        GatewayPolicy::new(capabilities.clone())
+            .accept(ClientHello {
+                client_name: "Runtime Inspector".to_owned(),
+                protocol_version: PROTOCOL_VERSION,
+                requested_capabilities: capabilities,
+            })
+            .unwrap()
+    }
+
+    fn empty_plugin_runtime_state() -> PluginRuntimeState {
+        PluginRuntimeState {
+            controller: Arc::new(AsyncMutex::new(RecordingPluginRuntimeController::new())),
+            events: RuntimeEventLog::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_plugins_from_state_lists_loaded_plugins() {
+        let state = empty_plugin_runtime_state();
+        let mut registry = PluginRegistry::new();
+        registry
+            .install(manifest("plugin.wasm", RuntimeKind::Wasm))
+            .unwrap();
+        registry
+            .install(manifest("plugin.js", RuntimeKind::JavaScript))
+            .unwrap();
+        registry.enable("plugin.wasm").unwrap();
+        registry.enable("plugin.js").unwrap();
+        state
+            .controller
+            .lock()
+            .await
+            .sync_from_registry(&registry)
+            .await
+            .unwrap();
+
+        let response = runtime_plugins_from_state(&state).await;
+
+        assert_eq!(
+            response.plugins,
+            vec![
+                RuntimePluginSnapshot {
+                    plugin_id: "plugin.js".to_owned(),
+                    runtime: RuntimeKind::JavaScript,
+                    entry: "dist/plugin.js".to_owned(),
+                },
+                RuntimePluginSnapshot {
+                    plugin_id: "plugin.wasm".to_owned(),
+                    runtime: RuntimeKind::Wasm,
+                    entry: "dist/plugin.wasm".to_owned(),
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_plugins_request_requires_plugin_manage() {
+        let state = empty_plugin_runtime_state();
+        let session = session_with(vec![Capability::DeviceRead]);
+
+        let error = execute_runtime_plugins_external_request(&session, &state)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, -32000);
+        assert!(error.message.contains("plugin.manage"));
+        assert!(error.message.contains(RUNTIME_PLUGINS_METHOD));
+    }
 }
