@@ -58,6 +58,14 @@ impl PluginBundle {
     pub fn entry_path(&self) -> &Path {
         &self.entry_path
     }
+
+    /// Reads the validated entry file bytes from disk.
+    pub fn read_entry_bytes(&self) -> Result<Vec<u8>, PluginBundleError> {
+        fs::read(&self.entry_path).map_err(|error| PluginBundleError::Io {
+            path: self.entry_path.clone(),
+            message: error.to_string(),
+        })
+    }
 }
 
 /// Error returned when a plugin bundle cannot be loaded.
@@ -108,7 +116,7 @@ mod tests {
     fn loads_valid_plugin_bundle() {
         let root = test_bundle_root("valid");
         fs::create_dir_all(root.join("dist")).unwrap();
-        fs::write(root.join("dist/plugin.wasm"), b"").unwrap();
+        fs::write(root.join("dist/plugin.wasm"), b"wasm bytes").unwrap();
         fs::write(
             root.join("manifest.json"),
             manifest_json("dist/plugin.wasm"),
@@ -119,6 +127,27 @@ mod tests {
 
         assert_eq!(bundle.manifest().id, "dev.arcflow.test");
         assert_eq!(bundle.entry_path(), root.join("dist/plugin.wasm"));
+        assert_eq!(bundle.read_entry_bytes().unwrap(), b"wasm bytes");
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn reports_entry_read_errors() {
+        let root = test_bundle_root("read-error");
+        fs::create_dir_all(root.join("dist")).unwrap();
+        fs::write(root.join("dist/plugin.wasm"), b"wasm bytes").unwrap();
+        fs::write(
+            root.join("manifest.json"),
+            manifest_json("dist/plugin.wasm"),
+        )
+        .unwrap();
+        let bundle = PluginBundle::load(&root).unwrap();
+        fs::remove_file(root.join("dist/plugin.wasm")).unwrap();
+
+        let error = bundle.read_entry_bytes().unwrap_err();
+
+        assert!(matches!(error, PluginBundleError::Io { .. }));
 
         fs::remove_dir_all(root).unwrap();
     }
