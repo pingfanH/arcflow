@@ -54,6 +54,25 @@ impl JsonRpcRequest {
             params,
         }
     }
+
+    /// Validates the JSON-RPC request envelope before routing.
+    pub fn validate(&self) -> Result<(), RpcError> {
+        if self.jsonrpc != "2.0" {
+            return Err(RpcError::new(
+                -32600,
+                format!(
+                    "unsupported JSON-RPC version `{}`; expected `2.0`",
+                    self.jsonrpc
+                ),
+            ));
+        }
+
+        if self.method.trim().is_empty() {
+            return Err(RpcError::new(-32600, "JSON-RPC method must not be blank"));
+        }
+
+        Ok(())
+    }
 }
 
 /// JSON-RPC response envelope.
@@ -177,6 +196,24 @@ mod tests {
                 "params": {"deviceId": "coyote-1"}
             })
         );
+    }
+
+    #[test]
+    fn validates_json_rpc_request_envelope() {
+        let request = JsonRpcRequest::new(RequestId::Number(1), "device.status", None);
+
+        assert!(request.validate().is_ok());
+
+        let invalid_version = JsonRpcRequest {
+            jsonrpc: "1.0".to_owned(),
+            id: RequestId::Number(2),
+            method: "device.status".to_owned(),
+            params: None,
+        };
+        let blank_method = JsonRpcRequest::new(RequestId::Number(3), " ", None);
+
+        assert_eq!(invalid_version.validate().unwrap_err().code, -32600);
+        assert_eq!(blank_method.validate().unwrap_err().code, -32600);
     }
 
     #[test]

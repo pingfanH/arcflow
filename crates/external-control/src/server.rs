@@ -357,7 +357,10 @@ async fn serve_client(
                 match message {
                     Ok(Message::Text(text)) => {
                         let response = match serde_json::from_str::<JsonRpcRequest>(&text) {
-                            Ok(request) => request_handler(session.clone(), request).await,
+                            Ok(request) => match request.validate() {
+                                Ok(()) => request_handler(session.clone(), request).await,
+                                Err(error) => JsonRpcResponse::error(request.id, error),
+                            },
                             Err(error) => JsonRpcResponse::error(
                                 crate::RequestId::String("invalid-request".to_owned()),
                                 RpcError::new(-32700, format!("invalid JSON-RPC request: {error}")),
@@ -446,6 +449,11 @@ impl std::error::Error for WsGatewayError {}
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
     use arcflow_plugin_runtime::Capability;
     use futures_util::{SinkExt, StreamExt};
     use serde_json::json;
@@ -525,6 +533,56 @@ mod tests {
         let status = handle.status();
         assert_eq!(status.accepted_sessions, 1);
         assert_eq!(status.active_sessions, 1);
+
+        handle.stop().await;
+    }
+
+    #[tokio::test]
+    async fn service_rejects_invalid_json_rpc_envelopes_before_handler() {
+        let service = WsGatewayService::new("127.0.0.1:0", GatewayPolicy::local_default());
+        let handler_calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_handler = Arc::clone(&handler_calls);
+        let handler: WsRequestHandler = Arc::new(move |_session, request| {
+            calls_for_handler.fetch_add(1, Ordering::Relaxed);
+            Box::pin(
+                async move { JsonRpcResponse::ok(request.id, json!({ "method": request.method })) },
+            )
+        });
+        let handle = service.start(handler).await.unwrap();
+        let address = handle.bind_address();
+
+        let (mut client, _) = connect_async(format!("ws://{address}")).await.unwrap();
+        let hello = ClientHello {
+            client_name: "OBS ArcFlow Bridge".to_owned(),
+            protocol_version: PROTOCOL_VERSION,
+            requested_capabilities: vec![Capability::DeviceRead],
+        };
+        client
+            .send(Message::Text(serde_json::to_string(&hello).unwrap().into()))
+            .await
+            .unwrap();
+        let _accepted = client.next().await.unwrap().unwrap();
+
+        client
+            .send(Message::Text(
+                json!({
+                    "jsonrpc": "1.0",
+                    "id": 8,
+                    "method": "device.status",
+                    "params": {"deviceId": "coyote-v3"}
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+
+        let response = client.next().await.unwrap().unwrap().into_text().unwrap();
+        let response: JsonRpcResponse = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(response.id, crate::RequestId::Number(8));
+        assert_eq!(response.error.unwrap().code, -32600);
+        assert_eq!(handler_calls.load(Ordering::Relaxed), 0);
 
         handle.stop().await;
     }
