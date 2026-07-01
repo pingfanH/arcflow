@@ -86,6 +86,9 @@ where
     S: DeviceBleOutputSink,
 {
     fn attach_output_device(&self, device_id: DeviceId) -> Result<(), CoreError> {
+        let write = CoyoteV3CommandBuilder::new(self.safety_limits).build_safety_limits_write()?;
+
+        self.sink.write(&device_id, write)?;
         self.attach_device(device_id);
         Ok(())
     }
@@ -173,6 +176,25 @@ mod tests {
         assert_eq!(writes[0].0, DeviceId::new("coyote-v3"));
         assert_eq!(writes[0].1.characteristic, BleCharacteristic::CoyoteV3Write);
         assert_eq!(writes[0].1.payload[1], 0x50);
+    }
+
+    #[test]
+    fn activation_writes_coyote_v3_safety_limits_before_output() {
+        let controller =
+            CoyoteV3OutputController::new(SafetyLimits::conservative(), RecordingSink::default());
+
+        controller
+            .attach_output_device(DeviceId::new("coyote-v3"))
+            .unwrap();
+
+        assert_eq!(
+            controller.active_devices(),
+            vec![DeviceId::new("coyote-v3")]
+        );
+        let writes = controller.sink.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].0, DeviceId::new("coyote-v3"));
+        assert_eq!(writes[0].1.payload, vec![0xBF, 20, 20, 0, 0, 0, 0]);
     }
 
     #[test]

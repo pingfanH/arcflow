@@ -21,6 +21,8 @@ Source material:
 - Coyote V3 uses B0 write commands, B1 strength notifications, and BF soft-limit/balance commands.
 - A connected Coyote V3 session subscribes to both `0x150B` B1 notifications and
   the shared `0x1500` battery characteristic for status updates.
+- Rust Core builds BF writes from `SafetyLimits` and sends them through the same
+  `0x150A` write characteristic before a Coyote V3 device is activated for output.
 - Invalid V3 channel wave values are preserved during parsing because the protocol documents them as a way to make the device ignore a channel.
 
 ## BLE UUIDs

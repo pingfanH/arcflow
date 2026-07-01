@@ -1312,8 +1312,24 @@ fn sync_active_coyote_v3_output_devices(runtime: &RuntimeState, scan: &DeviceSca
         }
     }
 
+    let active_device_ids = runtime.output_controller.active_devices();
     for device_id in output_device_ids {
-        runtime.output_controller.attach_device(device_id);
+        if active_device_ids.contains(&device_id) {
+            continue;
+        }
+
+        if let Err(error) = runtime
+            .output_controller
+            .attach_output_device(device_id.clone())
+        {
+            runtime.events.push(
+                "device.output.activation_failed",
+                format!(
+                    "device `{}` safety limit setup failed: {error}",
+                    device_id.as_str()
+                ),
+            );
+        }
     }
 }
 
@@ -1901,6 +1917,7 @@ mod tests {
             runtime.output_controller.active_devices(),
             vec![DeviceId::new("kept-v3"), DeviceId::new("new-v3")]
         );
+        assert_eq!(runtime.output_sink.stats().queued, 1);
     }
 
     #[test]

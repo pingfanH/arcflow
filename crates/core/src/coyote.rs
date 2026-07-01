@@ -1,6 +1,6 @@
 //! Coyote device command builders.
 
-use arcflow_protocol::coyote::v3::{StrengthMode, StrengthModes};
+use arcflow_protocol::coyote::v3::{BfCommand, StrengthMode, StrengthModes};
 use arcflow_wave::{ChannelOutput, CoyoteV3Window};
 
 use crate::{BleCharacteristic, BleWrite, CoreError, SafetyLimits};
@@ -53,6 +53,23 @@ impl CoyoteV3CommandBuilder {
             0,
             0,
         )
+    }
+
+    /// Builds a BF write that applies the active channel strength soft limits.
+    pub fn build_safety_limits_write(self) -> Result<BleWrite, CoreError> {
+        let command = BfCommand::new(
+            self.limits.max_channel_strength,
+            self.limits.max_channel_strength,
+            0,
+            0,
+            0,
+            0,
+        )?;
+
+        Ok(BleWrite::new(
+            BleCharacteristic::CoyoteV3Write,
+            command.to_bytes(),
+        ))
     }
 
     fn ensure_channel_strength(self, field: &'static str, value: u8) -> Result<(), CoreError> {
@@ -129,6 +146,16 @@ mod tests {
                 0x00, 0x00, 0x00, 0x00, 0x00, 0x65,
             ]
         );
+    }
+
+    #[test]
+    fn builds_coyote_v3_safety_limits_write() {
+        let write = CoyoteV3CommandBuilder::new(SafetyLimits::conservative())
+            .build_safety_limits_write()
+            .unwrap();
+
+        assert_eq!(write.characteristic, BleCharacteristic::CoyoteV3Write);
+        assert_eq!(write.payload, vec![0xBF, 20, 20, 0, 0, 0, 0]);
     }
 
     #[test]

@@ -97,6 +97,13 @@ where
         self.transport.write(write).await
     }
 
+    /// Writes Coyote V3 device-side soft limits from the active safety policy.
+    pub async fn apply_coyote_v3_safety_limits(&self) -> Result<(), CoreError> {
+        let write = CoyoteV3CommandBuilder::new(self.safety_limits).build_safety_limits_write()?;
+
+        self.transport.write(write).await
+    }
+
     /// Parses a Coyote V3 notify payload into channel strength status.
     pub fn parse_coyote_v3_notification(
         &self,
@@ -226,6 +233,22 @@ mod tests {
         assert_eq!(writes[0].payload[1], 0x2F);
         assert_eq!(writes[0].payload[11], 0x65);
         assert_eq!(writes[0].payload[19], 0x65);
+    }
+
+    #[tokio::test]
+    async fn applies_coyote_v3_safety_limits_through_transport() {
+        let session = DeviceSession::new(
+            DeviceId::new("coyote-v3"),
+            FakeTransport::default(),
+            SafetyLimits::conservative(),
+        );
+
+        session.apply_coyote_v3_safety_limits().await.unwrap();
+
+        let writes = session.transport.writes.lock().unwrap();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].characteristic, BleCharacteristic::CoyoteV3Write);
+        assert_eq!(writes[0].payload, vec![0xBF, 20, 20, 0, 0, 0, 0]);
     }
 
     #[test]
