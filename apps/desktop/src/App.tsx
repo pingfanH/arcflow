@@ -673,158 +673,222 @@ function App() {
           </header>
 
           <div className={shell.workspace}>
-            <section className="min-w-0 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
-              <div className="mb-4 flex items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-base font-semibold">Coyote Session</h2>
-                  <p className="text-sm text-zinc-500">{deviceSubtitle}</p>
-                </div>
-                <span
-                  className={`inline-flex items-center gap-2 rounded-lg px-2.5 py-1 text-xs font-medium ${
-                    deviceOnline ? "bg-emerald-50 text-emerald-700" : "bg-zinc-100 text-zinc-600"
-                  }`}
-                >
-                  <span
-                    className={`size-2 rounded-full ${deviceOnline ? "bg-emerald-500" : "bg-zinc-400"}`}
+            {activeTab === "device" ? (
+              <>
+                <section className="min-w-0 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+                  <div className="mb-4 flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-base font-semibold">Coyote Session</h2>
+                      <p className="text-sm text-zinc-500">{deviceSubtitle}</p>
+                    </div>
+                    <span
+                      className={`inline-flex items-center gap-2 rounded-lg px-2.5 py-1 text-xs font-medium ${
+                        deviceOnline
+                          ? "bg-emerald-50 text-emerald-700"
+                          : "bg-zinc-100 text-zinc-600"
+                      }`}
+                    >
+                      <span
+                        className={`size-2 rounded-full ${
+                          deviceOnline ? "bg-emerald-500" : "bg-zinc-400"
+                        }`}
+                      />
+                      {deviceOnline ? "Online" : "Standby"}
+                    </span>
+                  </div>
+
+                  <DeviceList
+                    activeOutputDeviceIds={activeOutputDeviceIds}
+                    busyDeviceId={outputDeviceBusyId}
+                    devices={lastScan?.devices ?? []}
+                    onActivate={activateOutputDevice}
+                    onDeactivate={deactivateOutputDevice}
                   />
-                  {deviceOnline ? "Online" : "Standby"}
-                </span>
-              </div>
+                </section>
 
-              <DeviceList
-                activeOutputDeviceIds={activeOutputDeviceIds}
-                busyDeviceId={outputDeviceBusyId}
-                devices={lastScan?.devices ?? []}
-                onActivate={activateOutputDevice}
-                onDeactivate={deactivateOutputDevice}
-              />
+                <section className="grid min-w-0 gap-4">
+                  <StatusPanel
+                    icon={Database}
+                    label="Storage"
+                    value={`SQLite schema ${storageStatus?.schemaVersion ?? 1}`}
+                    tone="zinc"
+                  />
+                  <StatusPanel
+                    icon={Activity}
+                    label="Output"
+                    value={`${runtimeStatus?.activeOutputDevices.length ?? 0} active - ${
+                      runtimeStatus?.bleOutputQueued ?? 0
+                    }/${runtimeStatus?.bleOutputWritten ?? 0}/${
+                      runtimeStatus?.bleOutputFailed ?? 0
+                    }`}
+                    tone="sky"
+                  />
+                  <RuntimeEventsPanel
+                    events={runtimeEvents ?? emptyRuntimeEvents}
+                    onRefresh={refreshRuntimeEvents}
+                  />
+                </section>
+              </>
+            ) : null}
 
-              <div className="grid gap-4 lg:grid-cols-2">
-                <ChannelControl
-                  label="Channel A"
-                  limit={status?.maxChannelStrength ?? 20}
-                  value={channelA}
-                  onChange={setChannelA}
-                />
-                <ChannelControl
-                  label="Channel B"
-                  limit={status?.maxChannelStrength ?? 20}
-                  value={channelB}
-                  onChange={setChannelB}
-                />
-              </div>
+            {activeTab === "wave" ? (
+              <>
+                <section className="min-w-0 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
+                  <div className="mb-4 flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-base font-semibold">Wave Preview</h2>
+                      <p className="text-sm text-zinc-500">
+                        {playing ? "Backend preview running" : "Backend preview stopped"}
+                      </p>
+                    </div>
+                    <span
+                      className={`inline-flex items-center gap-2 rounded-lg px-2.5 py-1 text-xs font-medium ${
+                        playing ? "bg-teal-50 text-teal-700" : "bg-zinc-100 text-zinc-600"
+                      }`}
+                    >
+                      <span
+                        className={`size-2 rounded-full ${
+                          playing ? "bg-teal-500" : "bg-zinc-400"
+                        }`}
+                      />
+                      {playing ? "Playing" : "Idle"}
+                    </span>
+                  </div>
 
-              <div className="mt-5 h-32 rounded-lg border border-zinc-200 bg-zinc-950 p-3">
-                <div className="flex h-full items-end gap-2">
-                  {waveBars.map((height, index) => (
-                    <div
-                      key={index}
-                      className="flex-1 rounded-sm bg-teal-400"
-                      style={{ height: `${playing ? height : Math.max(8, height / 4)}%` }}
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    <ChannelControl
+                      label="Channel A"
+                      limit={status?.maxChannelStrength ?? 20}
+                      value={channelA}
+                      onChange={setChannelA}
                     />
-                  ))}
-                </div>
-              </div>
+                    <ChannelControl
+                      label="Channel B"
+                      limit={status?.maxChannelStrength ?? 20}
+                      value={channelB}
+                      onChange={setChannelB}
+                    />
+                  </div>
 
-              <div className="mt-4 flex flex-wrap gap-2">
-                <button
-                  className="inline-flex h-10 items-center gap-2 rounded-lg bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={waveBusy || playing || activeOutputDeviceIds.length === 0}
-                  title="Start preview playback"
-                  type="button"
-                  onClick={startPreviewPlayback}
-                >
-                  <Play size={16} />
-                  Play
-                </button>
-                <button
-                  className="inline-flex h-10 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={waveBusy || !playing}
-                  title="Pause preview playback"
-                  type="button"
-                  onClick={stopPreviewPlayback}
-                >
-                  <Pause size={16} />
-                  Pause
-                </button>
-              </div>
+                  <div className="mt-5 h-32 rounded-lg border border-zinc-200 bg-zinc-950 p-3">
+                    <div className="flex h-full items-end gap-2">
+                      {waveBars.map((height, index) => (
+                        <div
+                          key={index}
+                          className="flex-1 rounded-sm bg-teal-400"
+                          style={{ height: `${playing ? height : Math.max(8, height / 4)}%` }}
+                        />
+                      ))}
+                    </div>
+                  </div>
 
-              {waveError ? (
-                <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {waveError}
-                </div>
-              ) : null}
-            </section>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      className="inline-flex h-10 items-center gap-2 rounded-lg bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={waveBusy || playing || activeOutputDeviceIds.length === 0}
+                      title="Start preview playback"
+                      type="button"
+                      onClick={startPreviewPlayback}
+                    >
+                      <Play size={16} />
+                      Play
+                    </button>
+                    <button
+                      className="inline-flex h-10 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={waveBusy || !playing}
+                      title="Pause preview playback"
+                      type="button"
+                      onClick={stopPreviewPlayback}
+                    >
+                      <Pause size={16} />
+                      Pause
+                    </button>
+                  </div>
 
-            <section className="grid min-w-0 gap-4">
-              <StatusPanel
-                icon={ShieldCheck}
-                label="Safety"
-                value={`Wave <= ${status?.maxWaveStrength ?? 30}`}
-                tone="emerald"
-              />
-              <PluginRegistryPanel
-                busy={pluginBusy}
-                bundlePath={pluginBundlePath}
-                error={pluginError}
-                registry={pluginRegistry ?? emptyPluginRegistry}
-                runtimes={status?.pluginRuntimes ?? ["wasm", "javascript"]}
-                onDelete={deletePlugin}
-                onBundlePathChange={setPluginBundlePath}
-                onInstallBundle={installPluginBundle}
-                onInstallStarter={installStarterPlugin}
-                onRefresh={refreshPluginRegistry}
-                onSetEnabled={setPluginEnabled}
-              />
-              <ScriptsPanel
-                busy={scriptBusy}
-                scripts={scripts ?? emptyScripts}
-                lastRun={lastScriptRun}
-                onDelete={deleteStoredScript}
-                onRefresh={refreshScripts}
-                onRun={runStoredScript}
-                onSaveStarter={saveStarterScript}
-              />
-              <StatusPanel
-                icon={Database}
-                label="Storage"
-                value={`SQLite schema ${storageStatus?.schemaVersion ?? 1}`}
-                tone="zinc"
-              />
-              <StatusPanel
-                icon={Activity}
-                label="Output"
-                value={`${runtimeStatus?.activeOutputDevices.length ?? 0} active - ${
-                  runtimeStatus?.bleOutputQueued ?? 0
-                }/${runtimeStatus?.bleOutputWritten ?? 0}/${runtimeStatus?.bleOutputFailed ?? 0}`}
-                tone="sky"
-              />
-              <StatusPanel
-                icon={Puzzle}
-                label="Loaded plugins"
-                value={`${runtimeStatus?.loadedPluginCount ?? 0} sandboxed`}
-                tone="emerald"
-              />
-              <RuntimeEventsPanel
-                events={runtimeEvents ?? emptyRuntimeEvents}
-                onRefresh={refreshRuntimeEvents}
-              />
-              <ExternalControlPanel
-                defaultBind={status?.externalControlBind ?? "127.0.0.1:0"}
-                busy={externalBusy}
-                controlMode={externalControlMode}
-                status={externalStatus}
-                onControlModeChange={setExternalControlMode}
-                onStart={startExternalControl}
-                onStop={stopExternalControl}
-              />
-              <StatusPanel
-                icon={Cable}
-                label="Protocol crate"
-                value={status?.protocolCrate ?? "arcflow-protocol"}
-                tone="zinc"
-              />
-            </section>
+                  {waveError ? (
+                    <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                      {waveError}
+                    </div>
+                  ) : null}
+                </section>
+
+                <section className="grid min-w-0 gap-4">
+                  <StatusPanel
+                    icon={ShieldCheck}
+                    label="Safety"
+                    value={`Wave <= ${status?.maxWaveStrength ?? 30}`}
+                    tone="emerald"
+                  />
+                  <StatusPanel
+                    icon={Activity}
+                    label="Output"
+                    value={`${runtimeStatus?.activeOutputDevices.length ?? 0} active - ${
+                      runtimeStatus?.bleOutputQueued ?? 0
+                    }/${runtimeStatus?.bleOutputWritten ?? 0}/${
+                      runtimeStatus?.bleOutputFailed ?? 0
+                    }`}
+                    tone="sky"
+                  />
+                  <RuntimeEventsPanel
+                    events={runtimeEvents ?? emptyRuntimeEvents}
+                    onRefresh={refreshRuntimeEvents}
+                  />
+                </section>
+              </>
+            ) : null}
+
+            {activeTab === "plugins" ? (
+              <>
+                <section className="grid min-w-0 gap-4">
+                  <PluginRegistryPanel
+                    busy={pluginBusy}
+                    bundlePath={pluginBundlePath}
+                    error={pluginError}
+                    registry={pluginRegistry ?? emptyPluginRegistry}
+                    runtimes={status?.pluginRuntimes ?? ["wasm", "javascript"]}
+                    onDelete={deletePlugin}
+                    onBundlePathChange={setPluginBundlePath}
+                    onInstallBundle={installPluginBundle}
+                    onInstallStarter={installStarterPlugin}
+                    onRefresh={refreshPluginRegistry}
+                    onSetEnabled={setPluginEnabled}
+                  />
+                  <StatusPanel
+                    icon={Puzzle}
+                    label="Loaded plugins"
+                    value={`${runtimeStatus?.loadedPluginCount ?? 0} sandboxed`}
+                    tone="emerald"
+                  />
+                </section>
+
+                <section className="grid min-w-0 gap-4">
+                  <ScriptsPanel
+                    busy={scriptBusy}
+                    scripts={scripts ?? emptyScripts}
+                    lastRun={lastScriptRun}
+                    onDelete={deleteStoredScript}
+                    onRefresh={refreshScripts}
+                    onRun={runStoredScript}
+                    onSaveStarter={saveStarterScript}
+                  />
+                  <ExternalControlPanel
+                    defaultBind={status?.externalControlBind ?? "127.0.0.1:0"}
+                    busy={externalBusy}
+                    controlMode={externalControlMode}
+                    status={externalStatus}
+                    onControlModeChange={setExternalControlMode}
+                    onStart={startExternalControl}
+                    onStop={stopExternalControl}
+                  />
+                  <StatusPanel
+                    icon={Cable}
+                    label="Protocol crate"
+                    value={status?.protocolCrate ?? "arcflow-protocol"}
+                    tone="zinc"
+                  />
+                </section>
+              </>
+            ) : null}
           </div>
 
           <footer className={shell.footer}>
