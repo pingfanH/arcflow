@@ -1189,6 +1189,16 @@ async fn execute_plugin_hook_external_request(
         .handle_output(&manifest, output)
         .await
         .map_err(|error| RpcError::new(-32000, error.to_string()))?;
+    runtime.events.push(
+        "plugin.hook.invoked",
+        format!(
+            "plugin `{}` hook `{}` invoked by `{}` with {} host actions",
+            params.plugin_id,
+            params.hook,
+            session.client_name(),
+            action_count
+        ),
+    );
 
     serde_json::to_value(PluginHookInvocationResponse {
         plugin_id: params.plugin_id,
@@ -1988,6 +1998,10 @@ mod tests {
             serde_json::from_slice::<Value>(&stored).unwrap(),
             serde_json::json!({"source": "ws"})
         );
+        assert_eq!(runtime.events.list()[0].kind, "plugin.hook.invoked");
+        assert!(runtime.events.list()[0]
+            .message
+            .contains("plugin `plugin.js` hook `external.connected`"));
 
         fs::remove_dir_all(bundle_root).unwrap();
     }
