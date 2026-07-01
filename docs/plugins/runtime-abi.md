@@ -65,6 +65,7 @@ Current host actions:
 | `storage.private.get` | `storage.private` | Read plugin-private JSON. |
 | `storage.private.delete` | `storage.private` | Delete one plugin-private key. |
 | `storage.private.keys` | `storage.private` | List plugin-private keys. |
+| `wave.submitWindow` | `wave.control` | Submit one validated Coyote V3 output window through Core-owned output control. |
 | `wave.stop` | `wave.control` | Stop Core-owned output through the attached device output controller. |
 
 An empty output is explicit:

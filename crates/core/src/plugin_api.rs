@@ -4,12 +4,15 @@ use core::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use arcflow_plugin_runtime::{Capability, PluginAction, PluginManifest, PluginOutput};
+use arcflow_protocol::coyote::v3::{StrengthMode, StrengthModes};
 use arcflow_storage::{Storage, StorageError};
+use arcflow_wave::{ChannelOutput, ChannelWindow, CoyoteV3Window, WavePoint};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    BleAdapterStatus, DeviceDiscoveryController, DeviceId, DeviceOutputController, DeviceStatus,
+    BleAdapterStatus, CoyoteV3OutputRequest, DeviceDiscoveryController, DeviceId,
+    DeviceOutputController, DeviceStatus,
 };
 
 /// Core-owned plugin host API.
@@ -84,6 +87,7 @@ impl PluginApi {
             "device.status" => self.device_status(manifest, action.params).await,
             "device.activateOutput" => self.activate_output_device(manifest, action.params),
             "device.deactivateOutput" => self.deactivate_output_device(manifest, action.params),
+            "wave.submitWindow" => self.submit_wave_window(manifest, action.params),
             "wave.stop" => self.wave_stop(manifest, action.params),
             method => Err(PluginApiError::UnknownMethod(method.to_owned())),
         }
@@ -247,6 +251,40 @@ impl PluginApi {
         }))
     }
 
+    fn submit_wave_window(
+        &self,
+        manifest: &PluginManifest,
+        params: Value,
+    ) -> Result<Value, PluginApiError> {
+        ensure_capability(manifest, Capability::WaveControl)?;
+        let params: SubmitWindowParams = read_params("wave.submitWindow", params)?;
+        let output_controller = self.output_controller("wave.submitWindow")?;
+        let device_id = DeviceId::new(params.device_id);
+        let request = CoyoteV3OutputRequest::new(
+            device_id,
+            CoyoteV3Window::new(
+                channel_output(params.channel_a)?,
+                channel_output(params.channel_b)?,
+            ),
+            params.sequence,
+            StrengthModes::new(
+                strength_mode(params.strength_modes.a),
+                strength_mode(params.strength_modes.b),
+            ),
+            params.a_strength,
+            params.b_strength,
+        );
+        let result = output_controller
+            .submit_coyote_v3_window(request)
+            .map_err(|error| PluginApiError::Host(error.to_string()))?;
+
+        Ok(json!({
+            "accepted": result.accepted,
+            "command": "wave.submitWindow",
+            "deviceId": result.device_id.as_str(),
+        }))
+    }
+
     fn wave_stop(&self, manifest: &PluginManifest, params: Value) -> Result<Value, PluginApiError> {
         ensure_capability(manifest, Capability::WaveControl)?;
         let params: DeviceParams = read_params("wave.stop", params)?;
@@ -355,6 +393,49 @@ struct DeviceParams {
     device_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubmitWindowParams {
+    device_id: String,
+    sequence: u8,
+    #[serde(default)]
+    strength_modes: StrengthModesParams,
+    #[serde(default)]
+    a_strength: u8,
+    #[serde(default)]
+    b_strength: u8,
+    #[serde(default)]
+    channel_a: Option<[WavePointParams; 4]>,
+    #[serde(default)]
+    channel_b: Option<[WavePointParams; 4]>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StrengthModesParams {
+    #[serde(default)]
+    a: StrengthModeParam,
+    #[serde(default)]
+    b: StrengthModeParam,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum StrengthModeParam {
+    #[default]
+    Unchanged,
+    Increase,
+    Decrease,
+    Absolute,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WavePointParams {
+    period_ms: u16,
+    strength: u8,
+}
+
 fn ensure_capability(
     manifest: &PluginManifest,
     capability: Capability,
@@ -394,6 +475,33 @@ fn device_ids_payload(device_ids: Vec<DeviceId>) -> Vec<String> {
         .collect()
 }
 
+fn channel_output(points: Option<[WavePointParams; 4]>) -> Result<ChannelOutput, PluginApiError> {
+    let Some(points) = points else {
+        return Ok(ChannelOutput::Disabled);
+    };
+
+    Ok(ChannelOutput::Window(ChannelWindow::new([
+        wave_point(points[0])?,
+        wave_point(points[1])?,
+        wave_point(points[2])?,
+        wave_point(points[3])?,
+    ])))
+}
+
+fn wave_point(point: WavePointParams) -> Result<WavePoint, PluginApiError> {
+    WavePoint::new(point.period_ms, point.strength)
+        .map_err(|error| PluginApiError::InvalidParams(error.to_string()))
+}
+
+fn strength_mode(mode: StrengthModeParam) -> StrengthMode {
+    match mode {
+        StrengthModeParam::Unchanged => StrengthMode::Unchanged,
+        StrengthModeParam::Increase => StrengthMode::Increase,
+        StrengthModeParam::Decrease => StrengthMode::Decrease,
+        StrengthModeParam::Absolute => StrengthMode::Absolute,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -431,6 +539,7 @@ mod tests {
     #[derive(Debug)]
     struct FakeOutputController {
         active_devices: Mutex<Vec<DeviceId>>,
+        submitted_requests: Mutex<Vec<CoyoteV3OutputRequest>>,
         stopped_devices: Vec<DeviceId>,
         stop_count: Mutex<usize>,
     }
@@ -439,6 +548,7 @@ mod tests {
         fn new(stopped_devices: Vec<DeviceId>) -> Self {
             Self {
                 active_devices: Mutex::new(Vec::new()),
+                submitted_requests: Mutex::new(Vec::new()),
                 stopped_devices,
                 stop_count: Mutex::new(0),
             }
@@ -468,11 +578,11 @@ mod tests {
 
         fn submit_coyote_v3_window(
             &self,
-            _request: crate::CoyoteV3OutputRequest,
+            request: crate::CoyoteV3OutputRequest,
         ) -> Result<crate::SubmitOutputResult, crate::CoreError> {
-            Err(crate::CoreError::Transport(
-                "fake output controller does not submit windows".to_owned(),
-            ))
+            let device_id = request.device_id.clone();
+            self.submitted_requests.lock().unwrap().push(request);
+            Ok(crate::SubmitOutputResult::new(device_id, true))
         }
 
         fn stop_all_output(&self) -> Result<crate::StopOutputResult, crate::CoreError> {
@@ -856,6 +966,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn submits_coyote_v3_window_through_output_controller() {
+        let storage = in_memory_storage();
+        let controller = Arc::new(FakeOutputController::new(Vec::new()));
+        let output_controller: Arc<dyn DeviceOutputController> = controller.clone();
+        let api = PluginApi::with_output_controller(storage, output_controller);
+        let manifest = manifest_with(vec![Capability::WaveControl]);
+
+        let result = api
+            .handle_action(
+                &manifest,
+                PluginAction::new("wave.submitWindow", submit_window_params()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            json!({
+                "accepted": true,
+                "command": "wave.submitWindow",
+                "deviceId": "coyote-v3",
+            })
+        );
+
+        let requests = controller.submitted_requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].device_id, DeviceId::new("coyote-v3"));
+        assert_eq!(requests[0].sequence, 4);
+        assert_eq!(
+            requests[0].strength_modes,
+            StrengthModes::new(StrengthMode::Absolute, StrengthMode::Unchanged)
+        );
+        assert_eq!(requests[0].a_strength, 8);
+        assert_eq!(requests[0].b_strength, 0);
+        assert_eq!(requests[0].window, safe_window());
+    }
+
+    #[tokio::test]
+    async fn rejects_wave_submit_window_without_capability() {
+        let storage = in_memory_storage();
+        let controller = Arc::new(FakeOutputController::new(Vec::new()));
+        let output_controller: Arc<dyn DeviceOutputController> = controller;
+        let api = PluginApi::with_output_controller(storage, output_controller);
+        let manifest = manifest_with(vec![Capability::DeviceRead]);
+
+        let error = api
+            .handle_action(
+                &manifest,
+                PluginAction::new("wave.submitWindow", submit_window_params()),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            PluginApiError::CapabilityDenied {
+                plugin_id: "com.example.plugin".to_owned(),
+                capability: Capability::WaveControl,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_wave_submit_window_without_output_controller() {
+        let storage = in_memory_storage();
+        let api = PluginApi::new(storage);
+        let manifest = manifest_with(vec![Capability::WaveControl]);
+
+        let error = api
+            .handle_action(
+                &manifest,
+                PluginAction::new("wave.submitWindow", submit_window_params()),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            PluginApiError::HostUnavailable("wave.submitWindow".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_wave_submit_window_with_invalid_wave_point() {
+        let storage = in_memory_storage();
+        let controller = Arc::new(FakeOutputController::new(Vec::new()));
+        let output_controller: Arc<dyn DeviceOutputController> = controller;
+        let api = PluginApi::with_output_controller(storage, output_controller);
+        let manifest = manifest_with(vec![Capability::WaveControl]);
+
+        let error = api
+            .handle_action(
+                &manifest,
+                PluginAction::new(
+                    "wave.submitWindow",
+                    json!({
+                        "deviceId": "coyote-v3",
+                        "sequence": 4,
+                        "channelA": [
+                            {"periodMs": 1, "strength": 0},
+                            {"periodMs": 10, "strength": 10},
+                            {"periodMs": 10, "strength": 20},
+                            {"periodMs": 10, "strength": 30}
+                        ]
+                    }),
+                ),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, PluginApiError::InvalidParams(_)));
+    }
+
+    #[tokio::test]
     async fn stops_wave_through_output_controller() {
         let storage = in_memory_storage();
         let controller = Arc::new(FakeOutputController::new(vec![DeviceId::new("coyote-v3")]));
@@ -926,5 +1150,36 @@ mod tests {
             error,
             PluginApiError::HostUnavailable("wave.stop".to_owned())
         );
+    }
+
+    fn submit_window_params() -> Value {
+        json!({
+            "deviceId": "coyote-v3",
+            "sequence": 4,
+            "strengthModes": {
+                "a": "absolute",
+                "b": "unchanged"
+            },
+            "aStrength": 8,
+            "bStrength": 0,
+            "channelA": [
+                {"periodMs": 10, "strength": 0},
+                {"periodMs": 10, "strength": 10},
+                {"periodMs": 10, "strength": 20},
+                {"periodMs": 10, "strength": 30}
+            ],
+            "channelB": null
+        })
+    }
+
+    fn safe_window() -> CoyoteV3Window {
+        let channel = ChannelWindow::new([
+            WavePoint::new(10, 0).unwrap(),
+            WavePoint::new(10, 10).unwrap(),
+            WavePoint::new(10, 20).unwrap(),
+            WavePoint::new(10, 30).unwrap(),
+        ]);
+
+        CoyoteV3Window::new(ChannelOutput::Window(channel), ChannelOutput::Disabled)
     }
 }
