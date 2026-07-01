@@ -71,6 +71,9 @@ local WebSocket gateway and receives only the capabilities granted during hello.
 Plugin manifests must point WASM runtimes at `.wasm` entries and JavaScript
 runtimes at `.js` or `.mjs` entries.
 
+Runtime engines exchange JSON envelopes with Rust Core. The stable invocation
+and output shape is documented in `docs/plugins/runtime-abi.md`.
+
 The current runtime implementation includes a recording adapter for both WASM
 and JavaScript. It validates sandbox admission, records load/invoke/unload
 events, and returns empty plugin output so host wiring can be tested without

@@ -1,6 +1,7 @@
 //! Runtime Adapter Interface for WASM and JavaScript plugins.
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{PluginManifest, RuntimeKind};
@@ -36,7 +37,7 @@ impl RuntimeHandle {
 }
 
 /// Invocation sent by ArcFlow to a plugin runtime.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginInvocation {
     /// Hook or method name.
     pub hook: String,
@@ -56,7 +57,7 @@ impl PluginInvocation {
 }
 
 /// Action requested by a plugin after invocation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginAction {
     /// Host method requested by the plugin.
     pub method: String,
@@ -76,7 +77,7 @@ impl PluginAction {
 }
 
 /// Output returned by a plugin invocation.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PluginOutput {
     /// Host actions requested by the plugin.
     pub actions: Vec<PluginAction>,
@@ -128,3 +129,65 @@ impl std::fmt::Display for RuntimeError {
 }
 
 impl std::error::Error for RuntimeError {}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn serializes_invocation_wire_envelope() {
+        let invocation = PluginInvocation::new("script.afterStep", json!({ "step": 3 }));
+
+        let value = serde_json::to_value(invocation).unwrap();
+
+        assert_eq!(
+            value,
+            json!({
+                "hook": "script.afterStep",
+                "payload": {
+                    "step": 3
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn deserializes_output_wire_envelope() {
+        let output: PluginOutput = serde_json::from_value(json!({
+            "actions": [
+                {
+                    "method": "storage.private.put",
+                    "params": {
+                        "key": "settings",
+                        "value": {
+                            "enabled": true
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            output,
+            PluginOutput::new(vec![PluginAction::new(
+                "storage.private.put",
+                json!({
+                    "key": "settings",
+                    "value": {
+                        "enabled": true
+                    }
+                })
+            )])
+        );
+    }
+
+    #[test]
+    fn serializes_empty_output_as_empty_actions() {
+        let value = serde_json::to_value(PluginOutput::default()).unwrap();
+
+        assert_eq!(value, json!({ "actions": [] }));
+    }
+}
