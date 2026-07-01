@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -8,12 +8,12 @@ use arcflow_core::{
     execute_plugin_registry_external_request, execute_script_documents_external_request,
     is_plugin_registry_external_request, is_plugin_registry_mutation_external_request,
     is_script_documents_external_request, ArcFlowCore, CoreScriptActionExecutor,
-    CoyoteV3OutputController, CoyoteV3OutputRequest, DeviceDiscoveryController, DeviceId,
-    DeviceModel, DeviceOutputController, DeviceScanResult, DeviceStatus, PluginBundle,
-    PluginRegistryEntry, PluginRegistryPersistence, PluginRuntimeSyncReport,
-    RecordingPluginRuntimeController, RecordingPluginRuntimeHookInvoker, SafetyLimits,
-    ScriptDocumentEntry, ScriptDocumentPersistence, ScriptWorkerEvent, ScriptWorkerQueue,
-    StopOutputResult, StorageScriptRunner, SubmitOutputResult,
+    CoyoteV3OutputController, CoyoteV3OutputRequest, CoyoteV3SequenceAllocator,
+    DeviceDiscoveryController, DeviceId, DeviceModel, DeviceOutputController, DeviceScanResult,
+    DeviceStatus, PluginBundle, PluginRegistryEntry, PluginRegistryPersistence,
+    PluginRuntimeSyncReport, RecordingPluginRuntimeController, RecordingPluginRuntimeHookInvoker,
+    SafetyLimits, ScriptDocumentEntry, ScriptDocumentPersistence, ScriptWorkerEvent,
+    ScriptWorkerQueue, StopOutputResult, StorageScriptRunner, SubmitOutputResult,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, ServerEvent,
@@ -55,7 +55,7 @@ struct RuntimeState {
     output_controller: Arc<CoyoteV3OutputController<TauriBleOutputSink>>,
     output_sink: TauriBleOutputSink,
     events: RuntimeEventLog,
-    preview_sequences: PreviewSequenceAllocator,
+    preview_sequences: Arc<Mutex<CoyoteV3SequenceAllocator>>,
 }
 
 #[derive(Clone)]
@@ -79,24 +79,6 @@ struct RuntimeEventLog {
 struct RuntimeEventLogInner {
     next_sequence: u64,
     events: VecDeque<RuntimeEventRecord>,
-}
-
-#[derive(Clone, Default)]
-struct PreviewSequenceAllocator {
-    next_by_device: Arc<Mutex<HashMap<DeviceId, u8>>>,
-}
-
-impl PreviewSequenceAllocator {
-    fn next(&self, device_id: &DeviceId) -> u8 {
-        let mut next_by_device = self
-            .next_by_device
-            .lock()
-            .expect("preview sequence allocator mutex poisoned");
-        let sequence = *next_by_device.entry(device_id.clone()).or_insert(0);
-        next_by_device.insert(device_id.clone(), sequence.wrapping_add(1));
-
-        sequence
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -581,7 +563,11 @@ fn submit_preview_window(
     runtime_state: tauri::State<'_, RuntimeState>,
 ) -> Result<SubmitWaveWindowResponse, String> {
     let device_id = DeviceId::new(device_id);
-    let sequence = runtime_state.preview_sequences.next(&device_id);
+    let sequence = runtime_state
+        .preview_sequences
+        .lock()
+        .expect("preview sequence allocator mutex poisoned")
+        .next(&device_id);
     let request =
         CoyoteV3OutputRequest::preview(device_id, sequence, channel_a_strength, channel_b_strength)
             .map_err(|error| error.to_string())?;
@@ -1204,7 +1190,7 @@ where
                 output_controller,
                 output_sink,
                 events,
-                preview_sequences: PreviewSequenceAllocator::default(),
+                preview_sequences: Arc::new(Mutex::new(CoyoteV3SequenceAllocator::default())),
             });
             app.manage(plugin_runtime);
             app.manage(CoreState {
@@ -1358,7 +1344,7 @@ mod tests {
             output_controller,
             output_sink,
             events: RuntimeEventLog::default(),
-            preview_sequences: PreviewSequenceAllocator::default(),
+            preview_sequences: Arc::new(Mutex::new(CoyoteV3SequenceAllocator::default())),
         };
         let scan = DeviceScanResult::new(
             arcflow_core::BleAdapterStatus::Ready,
@@ -1428,18 +1414,6 @@ mod tests {
                 accepted: true,
             }
         );
-    }
-
-    #[test]
-    fn preview_sequence_allocator_tracks_devices_independently() {
-        let allocator = PreviewSequenceAllocator::default();
-        let first = DeviceId::new("coyote-a");
-        let second = DeviceId::new("coyote-b");
-
-        assert_eq!(allocator.next(&first), 0);
-        assert_eq!(allocator.next(&first), 1);
-        assert_eq!(allocator.next(&second), 0);
-        assert_eq!(allocator.next(&first), 2);
     }
 
     #[test]

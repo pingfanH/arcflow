@@ -33,8 +33,8 @@ pub use ble::{
 pub use command::CoreCommand;
 pub use coyote::CoyoteV3CommandBuilder;
 pub use device::{
-    BleAdapterStatus, CoyoteV3OutputRequest, DeviceId, DeviceModel, DeviceScanResult, DeviceStatus,
-    StopOutputResult, SubmitOutputResult,
+    BleAdapterStatus, CoyoteV3OutputRequest, CoyoteV3SequenceAllocator, DeviceId, DeviceModel,
+    DeviceScanResult, DeviceStatus, StopOutputResult, SubmitOutputResult,
 };
 pub use error::CoreError;
 pub use external::{

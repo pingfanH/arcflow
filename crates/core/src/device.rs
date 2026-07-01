@@ -1,5 +1,7 @@
 //! Device identity and status types.
 
+use std::collections::HashMap;
+
 use arcflow_protocol::coyote::v3::{StrengthMode, StrengthModes};
 use arcflow_wave::{ChannelOutput, ChannelWindow, CoyoteV3Window, WavePoint};
 
@@ -170,6 +172,23 @@ impl CoyoteV3OutputRequest {
     }
 }
 
+/// Allocates wrapping Coyote V3 B0 sequence numbers per device.
+#[derive(Debug, Default)]
+pub struct CoyoteV3SequenceAllocator {
+    next_by_device: HashMap<DeviceId, u8>,
+}
+
+impl CoyoteV3SequenceAllocator {
+    /// Returns the next sequence number for a device and advances it.
+    pub fn next(&mut self, device_id: &DeviceId) -> u8 {
+        let sequence = *self.next_by_device.entry(device_id.clone()).or_insert(0);
+        self.next_by_device
+            .insert(device_id.clone(), sequence.wrapping_add(1));
+
+        sequence
+    }
+}
+
 fn preview_channel_output(channel_strength: u8) -> Result<ChannelOutput, CoreError> {
     if channel_strength == 0 {
         return Ok(ChannelOutput::Disabled);
@@ -230,5 +249,17 @@ mod tests {
             channel_a.points().map(|point| point.strength()),
             [0, 10, 20, 30]
         );
+    }
+
+    #[test]
+    fn allocates_coyote_v3_sequences_per_device() {
+        let mut allocator = CoyoteV3SequenceAllocator::default();
+        let first = DeviceId::new("coyote-a");
+        let second = DeviceId::new("coyote-b");
+
+        assert_eq!(allocator.next(&first), 0);
+        assert_eq!(allocator.next(&first), 1);
+        assert_eq!(allocator.next(&second), 0);
+        assert_eq!(allocator.next(&first), 2);
     }
 }
