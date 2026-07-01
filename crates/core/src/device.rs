@@ -1,7 +1,12 @@
 //! Device identity and status types.
 
-use arcflow_protocol::coyote::v3::StrengthModes;
-use arcflow_wave::CoyoteV3Window;
+use arcflow_protocol::coyote::v3::{StrengthMode, StrengthModes};
+use arcflow_wave::{ChannelOutput, ChannelWindow, CoyoteV3Window, WavePoint};
+
+use crate::CoreError;
+
+const PREVIEW_WAVE_PERIOD_MS: u16 = 10;
+const PREVIEW_WAVE_STRENGTHS: [u8; 4] = [0, 10, 20, 30];
 
 /// Stable ArcFlow device identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -143,6 +148,39 @@ impl CoyoteV3OutputRequest {
             b_strength,
         }
     }
+
+    /// Constructs a conservative one-window preview from UI channel strengths.
+    pub fn preview(
+        device_id: DeviceId,
+        sequence: u8,
+        a_strength: u8,
+        b_strength: u8,
+    ) -> Result<Self, CoreError> {
+        Ok(Self::new(
+            device_id,
+            CoyoteV3Window::new(
+                preview_channel_output(a_strength)?,
+                preview_channel_output(b_strength)?,
+            ),
+            sequence,
+            StrengthModes::new(StrengthMode::Absolute, StrengthMode::Absolute),
+            a_strength,
+            b_strength,
+        ))
+    }
+}
+
+fn preview_channel_output(channel_strength: u8) -> Result<ChannelOutput, CoreError> {
+    if channel_strength == 0 {
+        return Ok(ChannelOutput::Disabled);
+    }
+
+    Ok(ChannelOutput::Window(ChannelWindow::new([
+        WavePoint::new(PREVIEW_WAVE_PERIOD_MS, PREVIEW_WAVE_STRENGTHS[0])?,
+        WavePoint::new(PREVIEW_WAVE_PERIOD_MS, PREVIEW_WAVE_STRENGTHS[1])?,
+        WavePoint::new(PREVIEW_WAVE_PERIOD_MS, PREVIEW_WAVE_STRENGTHS[2])?,
+        WavePoint::new(PREVIEW_WAVE_PERIOD_MS, PREVIEW_WAVE_STRENGTHS[3])?,
+    ])))
 }
 
 /// Result of submitting one output window.
@@ -162,5 +200,35 @@ impl SubmitOutputResult {
             device_id,
             accepted,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builds_preview_output_request_from_channel_strengths() {
+        let request = CoyoteV3OutputRequest::preview(DeviceId::new("coyote-v3"), 3, 12, 0)
+            .expect("preview request");
+
+        assert_eq!(request.device_id, DeviceId::new("coyote-v3"));
+        assert_eq!(request.sequence, 3);
+        assert_eq!(request.strength_modes.a(), StrengthMode::Absolute);
+        assert_eq!(request.strength_modes.b(), StrengthMode::Absolute);
+        assert_eq!(request.a_strength, 12);
+        assert_eq!(request.b_strength, 0);
+        assert!(matches!(request.window.b(), ChannelOutput::Disabled));
+        let ChannelOutput::Window(channel_a) = request.window.a() else {
+            panic!("channel A should be enabled");
+        };
+        assert_eq!(
+            channel_a.points().map(|point| point.period_ms()),
+            [10, 10, 10, 10]
+        );
+        assert_eq!(
+            channel_a.points().map(|point| point.strength()),
+            [0, 10, 20, 30]
+        );
     }
 }

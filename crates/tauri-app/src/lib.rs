@@ -8,12 +8,12 @@ use arcflow_core::{
     execute_plugin_registry_external_request, execute_script_documents_external_request,
     is_plugin_registry_external_request, is_plugin_registry_mutation_external_request,
     is_script_documents_external_request, ArcFlowCore, CoreScriptActionExecutor,
-    CoyoteV3OutputController, DeviceDiscoveryController, DeviceId, DeviceModel,
-    DeviceOutputController, DeviceScanResult, DeviceStatus, PluginBundle, PluginRegistryEntry,
-    PluginRegistryPersistence, PluginRuntimeSyncReport, RecordingPluginRuntimeController,
-    RecordingPluginRuntimeHookInvoker, SafetyLimits, ScriptDocumentEntry,
-    ScriptDocumentPersistence, ScriptWorkerEvent, ScriptWorkerQueue, StopOutputResult,
-    StorageScriptRunner,
+    CoyoteV3OutputController, CoyoteV3OutputRequest, DeviceDiscoveryController, DeviceId,
+    DeviceModel, DeviceOutputController, DeviceScanResult, DeviceStatus, PluginBundle,
+    PluginRegistryEntry, PluginRegistryPersistence, PluginRuntimeSyncReport,
+    RecordingPluginRuntimeController, RecordingPluginRuntimeHookInvoker, SafetyLimits,
+    ScriptDocumentEntry, ScriptDocumentPersistence, ScriptWorkerEvent, ScriptWorkerQueue,
+    StopOutputResult, StorageScriptRunner, SubmitOutputResult,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, ServerEvent,
@@ -183,6 +183,13 @@ struct StopOutputResponse {
 #[serde(rename_all = "camelCase")]
 struct OutputDeviceActivationResponse {
     active_output_devices: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SubmitWaveWindowResponse {
+    device_id: String,
+    accepted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -502,6 +509,28 @@ fn deactivate_output_device(
     );
 
     Ok(output_device_activation_response(active_devices))
+}
+
+#[tauri::command]
+fn submit_preview_window(
+    device_id: String,
+    channel_a_strength: u8,
+    channel_b_strength: u8,
+    state: tauri::State<'_, CoreState>,
+) -> Result<SubmitWaveWindowResponse, String> {
+    let request = CoyoteV3OutputRequest::preview(
+        DeviceId::new(device_id),
+        0,
+        channel_a_strength,
+        channel_b_strength,
+    )
+    .map_err(|error| error.to_string())?;
+
+    state
+        .core
+        .submit_coyote_v3_window(request)
+        .map(submit_wave_window_response)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1011,6 +1040,13 @@ fn output_device_activation_response(
     }
 }
 
+fn submit_wave_window_response(result: SubmitOutputResult) -> SubmitWaveWindowResponse {
+    SubmitWaveWindowResponse {
+        device_id: result.device_id.as_str().to_owned(),
+        accepted: result.accepted,
+    }
+}
+
 /// Runs the shared ArcFlow Tauri application with a platform app context.
 pub fn run<R>(context: tauri::Context<R>)
 where
@@ -1106,6 +1142,7 @@ where
             stop_output,
             activate_output_device,
             deactivate_output_device,
+            submit_preview_window,
             external_control_status,
             start_external_control,
             stop_external_control
@@ -1274,6 +1311,20 @@ mod tests {
             response,
             OutputDeviceActivationResponse {
                 active_output_devices: vec!["coyote-a".to_owned(), "coyote-b".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn submit_wave_window_response_reports_acceptance() {
+        let response =
+            submit_wave_window_response(SubmitOutputResult::new(DeviceId::new("coyote-v3"), true));
+
+        assert_eq!(
+            response,
+            SubmitWaveWindowResponse {
+                device_id: "coyote-v3".to_owned(),
+                accepted: true,
             }
         );
     }

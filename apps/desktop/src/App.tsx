@@ -60,6 +60,11 @@ type OutputDeviceActivationResponse = {
   activeOutputDevices: string[];
 };
 
+type SubmitWaveWindowResponse = {
+  deviceId: string;
+  accepted: boolean;
+};
+
 type StorageStatus = {
   schemaVersion: number;
   databasePath: string;
@@ -193,6 +198,8 @@ function App() {
   const [lastScriptRun, setLastScriptRun] = useState<ScriptRunResponse | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
   const [stopBusy, setStopBusy] = useState(false);
+  const [waveBusy, setWaveBusy] = useState(false);
+  const [waveError, setWaveError] = useState<string | null>(null);
   const [outputDeviceBusyId, setOutputDeviceBusyId] = useState<string | null>(null);
   const [pluginBusy, setPluginBusy] = useState(false);
   const [pluginBundlePath, setPluginBundlePath] = useState("");
@@ -321,11 +328,40 @@ function App() {
     invoke<StopOutputResponse>("stop_output")
       .then(() => {
         setPlaying(false);
+        setWaveError(null);
         refreshRuntimeStatus();
         refreshRuntimeEvents();
       })
       .catch(() => setPlaying(false))
       .finally(() => setStopBusy(false));
+  };
+
+  const playPreviewWindow = () => {
+    const deviceId = activeOutputDeviceIds[0];
+    if (!deviceId) {
+      setWaveError("No active output device");
+      setPlaying(false);
+      return;
+    }
+
+    setWaveBusy(true);
+    invoke<SubmitWaveWindowResponse>("submit_preview_window", {
+      deviceId,
+      channelAStrength: channelA,
+      channelBStrength: channelB,
+    })
+      .then((result) => {
+        setPlaying(result.accepted);
+        setWaveError(null);
+        refreshRuntimeStatus();
+        refreshRuntimeEvents();
+      })
+      .catch((error) => {
+        setPlaying(false);
+        setWaveError(errorMessage(error));
+        refreshRuntimeStatus();
+      })
+      .finally(() => setWaveBusy(false));
   };
 
   const installStarterPlugin = () => {
@@ -566,10 +602,11 @@ function App() {
 
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
-                  className="inline-flex h-10 items-center gap-2 rounded-lg bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700"
+                  className="inline-flex h-10 items-center gap-2 rounded-lg bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={waveBusy || activeOutputDeviceIds.length === 0}
                   title="Start wave output"
                   type="button"
-                  onClick={() => setPlaying(true)}
+                  onClick={playPreviewWindow}
                 >
                   <Play size={16} />
                   Play
@@ -578,12 +615,21 @@ function App() {
                   className="inline-flex h-10 items-center gap-2 rounded-lg border border-zinc-200 bg-white px-3 text-sm font-medium text-zinc-700 hover:bg-zinc-50"
                   title="Pause wave output"
                   type="button"
-                  onClick={() => setPlaying(false)}
+                  onClick={() => {
+                    setPlaying(false);
+                    setWaveError(null);
+                  }}
                 >
                   <Pause size={16} />
                   Pause
                 </button>
               </div>
+
+              {waveError ? (
+                <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {waveError}
+                </div>
+              ) : null}
             </section>
 
             <section className="grid min-w-0 gap-4">
