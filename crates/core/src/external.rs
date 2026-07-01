@@ -13,6 +13,8 @@ use crate::{
     ScriptDocumentPersistence,
 };
 
+const DEVICE_ACTIVATE_OUTPUT_METHOD: &str = "device.activateOutput";
+const DEVICE_DEACTIVATE_OUTPUT_METHOD: &str = "device.deactivateOutput";
 const PLUGIN_REGISTRY_METHOD: &str = "plugin.registry";
 const PLUGIN_INSTALL_MANIFEST_METHOD: &str = "plugin.installManifest";
 const PLUGIN_INSTALL_BUNDLE_METHOD: &str = "plugin.installBundle";
@@ -47,6 +49,9 @@ pub fn required_capability_for_external_request(
 ) -> Result<Capability, CoreError> {
     match request.method.as_str() {
         "device.status" => Ok(Capability::DeviceRead),
+        DEVICE_ACTIVATE_OUTPUT_METHOD | DEVICE_DEACTIVATE_OUTPUT_METHOD => {
+            Ok(Capability::WaveControl)
+        }
         "wave.submitWindow" => Ok(Capability::WaveControl),
         "wave.stop" => Ok(Capability::WaveControl),
         "script.run" => Ok(Capability::ScriptRun),
@@ -64,6 +69,18 @@ pub fn core_command_from_external_request(
         "device.status" => {
             let params: DeviceParams = read_params(request)?;
             Ok(CoreCommand::ReadDeviceStatus {
+                device_id: DeviceId::new(params.device_id),
+            })
+        }
+        DEVICE_ACTIVATE_OUTPUT_METHOD => {
+            let params: DeviceParams = read_params(request)?;
+            Ok(CoreCommand::ActivateOutputDevice {
+                device_id: DeviceId::new(params.device_id),
+            })
+        }
+        DEVICE_DEACTIVATE_OUTPUT_METHOD => {
+            let params: DeviceParams = read_params(request)?;
+            Ok(CoreCommand::DeactivateOutputDevice {
                 device_id: DeviceId::new(params.device_id),
             })
         }
@@ -412,6 +429,37 @@ mod tests {
             CoreCommand::ReadDeviceStatus {
                 device_id: DeviceId::new("coyote-v3")
             }
+        );
+    }
+
+    #[test]
+    fn routes_output_activation_requests() {
+        let activate = JsonRpcRequest::new(
+            RequestId::Number(2),
+            DEVICE_ACTIVATE_OUTPUT_METHOD,
+            Some(json!({ "deviceId": "coyote-v3" })),
+        );
+        let deactivate = JsonRpcRequest::new(
+            RequestId::Number(3),
+            DEVICE_DEACTIVATE_OUTPUT_METHOD,
+            Some(json!({ "deviceId": "coyote-v3" })),
+        );
+
+        assert_eq!(
+            core_command_from_external_request(&activate).unwrap(),
+            CoreCommand::ActivateOutputDevice {
+                device_id: DeviceId::new("coyote-v3")
+            }
+        );
+        assert_eq!(
+            core_command_from_external_request(&deactivate).unwrap(),
+            CoreCommand::DeactivateOutputDevice {
+                device_id: DeviceId::new("coyote-v3")
+            }
+        );
+        assert_eq!(
+            required_capability_for_external_request(&activate).unwrap(),
+            Capability::WaveControl
         );
     }
 

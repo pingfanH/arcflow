@@ -13,6 +13,16 @@ pub enum CoreCommand {
         /// Device id.
         device_id: DeviceId,
     },
+    /// Activate a device for output writes.
+    ActivateOutputDevice {
+        /// Device id.
+        device_id: DeviceId,
+    },
+    /// Deactivate a device for output writes.
+    DeactivateOutputDevice {
+        /// Device id.
+        device_id: DeviceId,
+    },
     /// Submit one validated Coyote V3 wave window.
     SubmitCoyoteV3Window {
         /// Device id.

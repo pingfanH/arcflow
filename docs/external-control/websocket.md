@@ -120,6 +120,44 @@ Required capability: `wave.control`
 }
 ```
 
+### `device.activateOutput`
+
+Required capability: `wave.control`
+
+Marks a device as eligible for wave output writes.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "device.activateOutput",
+  "params": {
+    "deviceId": "coyote-v3"
+  }
+}
+```
+
+Successful responses include the current `activeOutputDevices` list.
+
+### `device.deactivateOutput`
+
+Required capability: `wave.control`
+
+Removes a device from wave output writes.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "device.deactivateOutput",
+  "params": {
+    "deviceId": "coyote-v3"
+  }
+}
+```
+
+Successful responses include the current `activeOutputDevices` list.
+
 ### `wave.submitWindow`
 
 Required capability: `wave.control`
@@ -130,7 +168,7 @@ four points or `null`/omitted to disable that channel.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 3,
+  "id": 5,
   "method": "wave.submitWindow",
   "params": {
     "deviceId": "coyote-v3",
@@ -162,7 +200,7 @@ Required capability: `script.run`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 4,
+  "id": 6,
   "method": "script.run",
   "params": {
     "scriptId": "script.demo"
@@ -177,7 +215,7 @@ Required capability: `script.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 5,
+  "id": 7,
   "method": "script.list"
 }
 ```
@@ -191,7 +229,7 @@ The document is validated by the Rust script compiler before it is stored.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 6,
+  "id": 8,
   "method": "script.upsert",
   "params": {
     "scriptId": "script.demo",
@@ -207,7 +245,7 @@ Required capability: `script.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 7,
+  "id": 9,
   "method": "script.delete",
   "params": {
     "scriptId": "script.demo"
@@ -225,7 +263,7 @@ plugins currently loaded into the sandboxed runtime.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 8,
+  "id": 10,
   "method": "runtime.status"
 }
 ```
@@ -240,7 +278,7 @@ events.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 9,
+  "id": 11,
   "method": "runtime.events"
 }
 ```

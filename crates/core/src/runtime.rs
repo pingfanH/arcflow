@@ -267,6 +267,26 @@ impl ArcFlowCore {
             CoreCommand::ReadDeviceStatus { device_id } => {
                 self.device_status_payload(&device_id).await
             }
+            CoreCommand::ActivateOutputDevice { device_id } => {
+                let active_devices = self.attach_output_device(device_id.clone())?;
+
+                Ok(json!({
+                    "accepted": true,
+                    "command": "device.activateOutput",
+                    "deviceId": device_id.as_str(),
+                    "activeOutputDevices": device_ids_payload(active_devices),
+                }))
+            }
+            CoreCommand::DeactivateOutputDevice { device_id } => {
+                let active_devices = self.detach_output_device(&device_id)?;
+
+                Ok(json!({
+                    "accepted": true,
+                    "command": "device.deactivateOutput",
+                    "deviceId": device_id.as_str(),
+                    "activeOutputDevices": device_ids_payload(active_devices),
+                }))
+            }
             CoreCommand::SubmitCoyoteV3Window {
                 device_id,
                 window,
@@ -427,8 +447,8 @@ mod tests {
         assert_eq!(result.stopped_devices, vec![DeviceId::new("coyote-v3")]);
     }
 
-    #[test]
-    fn output_device_activation_uses_output_controller() {
+    #[tokio::test]
+    async fn output_device_activation_uses_output_controller() {
         #[derive(Debug, Default)]
         struct FakeOutputController {
             active_devices: Mutex<Vec<DeviceId>>,
@@ -485,6 +505,38 @@ mod tests {
             .detach_output_device(&DeviceId::new("coyote-v3"))
             .unwrap();
         assert!(active_devices.is_empty());
+
+        let result = core
+            .execute_command(CoreCommand::ActivateOutputDevice {
+                device_id: DeviceId::new("coyote-v3"),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "accepted": true,
+                "command": "device.activateOutput",
+                "deviceId": "coyote-v3",
+                "activeOutputDevices": ["coyote-v3"],
+            })
+        );
+
+        let result = core
+            .execute_command(CoreCommand::DeactivateOutputDevice {
+                device_id: DeviceId::new("coyote-v3"),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            result,
+            json!({
+                "accepted": true,
+                "command": "device.deactivateOutput",
+                "deviceId": "coyote-v3",
+                "activeOutputDevices": [],
+            })
+        );
     }
 
     #[tokio::test]
@@ -621,4 +673,11 @@ fn device_status_payload(device: &DeviceStatus, adapter_status: BleAdapterStatus
         "adapterStatus": adapter_status.as_str(),
         "batteryPercent": device.battery_percent,
     })
+}
+
+fn device_ids_payload(device_ids: Vec<DeviceId>) -> Vec<String> {
+    device_ids
+        .into_iter()
+        .map(|device_id| device_id.as_str().to_owned())
+        .collect()
 }
