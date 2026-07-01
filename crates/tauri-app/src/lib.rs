@@ -8,11 +8,12 @@ use arcflow_core::{
     execute_plugin_registry_external_request, execute_script_documents_external_request,
     is_plugin_registry_external_request, is_plugin_registry_mutation_external_request,
     is_script_documents_external_request, ArcFlowCore, CoreScriptActionExecutor,
-    CoyoteV3OutputController, DeviceDiscoveryController, DeviceModel, DeviceOutputController,
-    DeviceScanResult, DeviceStatus, PluginBundle, PluginRegistryEntry, PluginRegistryPersistence,
-    PluginRuntimeSyncReport, RecordingPluginRuntimeController, RecordingPluginRuntimeHookInvoker,
-    SafetyLimits, ScriptDocumentEntry, ScriptDocumentPersistence, ScriptWorkerEvent,
-    ScriptWorkerQueue, StopOutputResult, StorageScriptRunner,
+    CoyoteV3OutputController, DeviceDiscoveryController, DeviceId, DeviceModel,
+    DeviceOutputController, DeviceScanResult, DeviceStatus, PluginBundle, PluginRegistryEntry,
+    PluginRegistryPersistence, PluginRuntimeSyncReport, RecordingPluginRuntimeController,
+    RecordingPluginRuntimeHookInvoker, SafetyLimits, ScriptDocumentEntry,
+    ScriptDocumentPersistence, ScriptWorkerEvent, ScriptWorkerQueue, StopOutputResult,
+    StorageScriptRunner,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, ServerEvent,
@@ -433,13 +434,19 @@ fn run_script(
 }
 
 #[tauri::command]
-async fn scan_devices(state: tauri::State<'_, CoreState>) -> Result<DeviceScanResponse, String> {
-    state
+async fn scan_devices(
+    state: tauri::State<'_, CoreState>,
+    runtime_state: tauri::State<'_, RuntimeState>,
+) -> Result<DeviceScanResponse, String> {
+    let scan = state
         .core
         .scan_devices()
         .await
-        .map(device_scan_response)
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+
+    sync_active_coyote_v3_output_devices(&runtime_state, &scan);
+
+    Ok(device_scan_response(scan))
 }
 
 #[tauri::command]
@@ -741,6 +748,25 @@ fn runtime_status_from_state(runtime: &RuntimeState, loaded_plugin_count: usize)
         ble_output_written: stats.written,
         ble_output_failed: stats.failed,
         loaded_plugin_count,
+    }
+}
+
+fn sync_active_coyote_v3_output_devices(runtime: &RuntimeState, scan: &DeviceScanResult) {
+    let output_device_ids: Vec<DeviceId> = scan
+        .devices
+        .iter()
+        .filter(|device| device.connected && device.model == DeviceModel::CoyoteV3)
+        .map(|device| device.id.clone())
+        .collect();
+
+    for active_device_id in runtime.output_controller.active_devices() {
+        if !output_device_ids.contains(&active_device_id) {
+            runtime.output_controller.detach_device(&active_device_id);
+        }
+    }
+
+    for device_id in output_device_ids {
+        runtime.output_controller.attach_device(device_id);
     }
 }
 
@@ -1124,5 +1150,57 @@ mod tests {
         assert_eq!(error.code, -32000);
         assert!(error.message.contains("plugin.manage"));
         assert!(error.message.contains(RUNTIME_PLUGINS_METHOD));
+    }
+
+    #[tokio::test]
+    async fn syncs_connected_coyote_v3_devices_to_output_controller() {
+        let output_sink = TauriBleOutputSink::spawn(Arc::new(UnsupportedTauriBleTransportProvider));
+        let output_controller = Arc::new(CoyoteV3OutputController::new(
+            SafetyLimits::conservative(),
+            output_sink.clone(),
+        ));
+        output_controller.attach_device(DeviceId::new("stale-v3"));
+        output_controller.attach_device(DeviceId::new("kept-v3"));
+        let runtime = RuntimeState {
+            output_controller,
+            output_sink,
+            events: RuntimeEventLog::default(),
+        };
+        let scan = DeviceScanResult::new(
+            arcflow_core::BleAdapterStatus::Ready,
+            vec![
+                DeviceStatus {
+                    id: DeviceId::new("kept-v3"),
+                    model: DeviceModel::CoyoteV3,
+                    battery_percent: None,
+                    connected: true,
+                },
+                DeviceStatus {
+                    id: DeviceId::new("new-v3"),
+                    model: DeviceModel::CoyoteV3,
+                    battery_percent: None,
+                    connected: true,
+                },
+                DeviceStatus {
+                    id: DeviceId::new("ignored-v2"),
+                    model: DeviceModel::CoyoteV2,
+                    battery_percent: None,
+                    connected: true,
+                },
+                DeviceStatus {
+                    id: DeviceId::new("ignored-disconnected-v3"),
+                    model: DeviceModel::CoyoteV3,
+                    battery_percent: None,
+                    connected: false,
+                },
+            ],
+        );
+
+        sync_active_coyote_v3_output_devices(&runtime, &scan);
+
+        assert_eq!(
+            runtime.output_controller.active_devices(),
+            vec![DeviceId::new("kept-v3"), DeviceId::new("new-v3")]
+        );
     }
 }
