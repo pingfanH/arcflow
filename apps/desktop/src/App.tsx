@@ -191,6 +191,7 @@ function App() {
   const [stopBusy, setStopBusy] = useState(false);
   const [pluginBusy, setPluginBusy] = useState(false);
   const [pluginBundlePath, setPluginBundlePath] = useState("");
+  const [pluginError, setPluginError] = useState<string | null>(null);
   const [scriptBusy, setScriptBusy] = useState(false);
   const [deviceOnline, setDeviceOnline] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -304,10 +305,14 @@ function App() {
     })
       .then((result) => {
         setPluginRegistry(result);
+        setPluginError(null);
         refreshRuntimeStatus();
         refreshRuntimeEvents();
       })
-      .catch(refreshPluginRegistry)
+      .catch((error) => {
+        setPluginError(errorMessage(error));
+        refreshPluginRegistry();
+      })
       .finally(() => setPluginBusy(false));
   };
 
@@ -322,10 +327,14 @@ function App() {
       .then((result) => {
         setPluginRegistry(result);
         setPluginBundlePath("");
+        setPluginError(null);
         refreshRuntimeStatus();
         refreshRuntimeEvents();
       })
-      .catch(refreshPluginRegistry)
+      .catch((error) => {
+        setPluginError(errorMessage(error));
+        refreshPluginRegistry();
+      })
       .finally(() => setPluginBusy(false));
   };
 
@@ -334,10 +343,14 @@ function App() {
     invoke<PluginRegistryResponse>("set_plugin_enabled", { pluginId, enabled })
       .then((result) => {
         setPluginRegistry(result);
+        setPluginError(null);
         refreshRuntimeStatus();
         refreshRuntimeEvents();
       })
-      .catch(refreshPluginRegistry)
+      .catch((error) => {
+        setPluginError(errorMessage(error));
+        refreshPluginRegistry();
+      })
       .finally(() => setPluginBusy(false));
   };
 
@@ -346,10 +359,14 @@ function App() {
     invoke<PluginRegistryResponse>("delete_plugin", { pluginId })
       .then((result) => {
         setPluginRegistry(result);
+        setPluginError(null);
         refreshRuntimeStatus();
         refreshRuntimeEvents();
       })
-      .catch(refreshPluginRegistry)
+      .catch((error) => {
+        setPluginError(errorMessage(error));
+        refreshPluginRegistry();
+      })
       .finally(() => setPluginBusy(false));
   };
 
@@ -540,6 +557,7 @@ function App() {
               <PluginRegistryPanel
                 busy={pluginBusy}
                 bundlePath={pluginBundlePath}
+                error={pluginError}
                 registry={pluginRegistry ?? emptyPluginRegistry}
                 runtimes={status?.pluginRuntimes ?? ["wasm", "javascript"]}
                 onDelete={deletePlugin}
@@ -752,6 +770,7 @@ function ScriptsPanel({
 type PluginRegistryPanelProps = {
   busy: boolean;
   bundlePath: string;
+  error: string | null;
   registry: PluginRegistryResponse;
   runtimes: string[];
   onBundlePathChange: (path: string) => void;
@@ -765,6 +784,7 @@ type PluginRegistryPanelProps = {
 function PluginRegistryPanel({
   busy,
   bundlePath,
+  error,
   registry,
   runtimes,
   onBundlePathChange,
@@ -828,6 +848,12 @@ function PluginRegistryPanel({
         </button>
       </div>
 
+      {error ? (
+        <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          {error}
+        </div>
+      ) : null}
+
       <div className="mt-3 space-y-2">
         {registry.plugins.length === 0 ? (
           <div className="rounded-lg bg-zinc-50 px-3 py-2 text-sm text-zinc-500">
@@ -887,6 +913,18 @@ function PluginRegistryPanel({
       </div>
     </div>
   );
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  return "Operation failed";
 }
 
 type ExternalControlPanelProps = {
