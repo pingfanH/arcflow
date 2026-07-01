@@ -68,6 +68,7 @@ type OutputDeviceActivationResponse = {
 
 type SubmitWaveWindowResponse = {
   deviceId: string;
+  sequence: number;
   accepted: boolean;
 };
 

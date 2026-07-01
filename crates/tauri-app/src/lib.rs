@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     path::PathBuf,
     sync::{Arc, Mutex},
 };
@@ -49,6 +49,7 @@ struct RuntimeState {
     output_controller: Arc<CoyoteV3OutputController<TauriBleOutputSink>>,
     output_sink: TauriBleOutputSink,
     events: RuntimeEventLog,
+    preview_sequences: PreviewSequenceAllocator,
 }
 
 #[derive(Clone)]
@@ -72,6 +73,24 @@ struct RuntimeEventLog {
 struct RuntimeEventLogInner {
     next_sequence: u64,
     events: VecDeque<RuntimeEventRecord>,
+}
+
+#[derive(Clone, Default)]
+struct PreviewSequenceAllocator {
+    next_by_device: Arc<Mutex<HashMap<DeviceId, u8>>>,
+}
+
+impl PreviewSequenceAllocator {
+    fn next(&self, device_id: &DeviceId) -> u8 {
+        let mut next_by_device = self
+            .next_by_device
+            .lock()
+            .expect("preview sequence allocator mutex poisoned");
+        let sequence = *next_by_device.entry(device_id.clone()).or_insert(0);
+        next_by_device.insert(device_id.clone(), sequence.wrapping_add(1));
+
+        sequence
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -203,6 +222,7 @@ struct OutputDeviceActivationResponse {
 #[serde(rename_all = "camelCase")]
 struct SubmitWaveWindowResponse {
     device_id: String,
+    sequence: u8,
     accepted: bool,
 }
 
@@ -550,19 +570,18 @@ fn submit_preview_window(
     channel_a_strength: u8,
     channel_b_strength: u8,
     state: tauri::State<'_, CoreState>,
+    runtime_state: tauri::State<'_, RuntimeState>,
 ) -> Result<SubmitWaveWindowResponse, String> {
-    let request = CoyoteV3OutputRequest::preview(
-        DeviceId::new(device_id),
-        0,
-        channel_a_strength,
-        channel_b_strength,
-    )
-    .map_err(|error| error.to_string())?;
+    let device_id = DeviceId::new(device_id);
+    let sequence = runtime_state.preview_sequences.next(&device_id);
+    let request =
+        CoyoteV3OutputRequest::preview(device_id, sequence, channel_a_strength, channel_b_strength)
+            .map_err(|error| error.to_string())?;
 
     state
         .core
         .submit_coyote_v3_window(request)
-        .map(submit_wave_window_response)
+        .map(|result| submit_wave_window_response(result, sequence))
         .map_err(|error| error.to_string())
 }
 
@@ -1073,9 +1092,13 @@ fn output_device_activation_response(
     }
 }
 
-fn submit_wave_window_response(result: SubmitOutputResult) -> SubmitWaveWindowResponse {
+fn submit_wave_window_response(
+    result: SubmitOutputResult,
+    sequence: u8,
+) -> SubmitWaveWindowResponse {
     SubmitWaveWindowResponse {
         device_id: result.device_id.as_str().to_owned(),
+        sequence,
         accepted: result.accepted,
     }
 }
@@ -1142,6 +1165,7 @@ where
                 output_controller,
                 output_sink,
                 events,
+                preview_sequences: PreviewSequenceAllocator::default(),
             });
             app.manage(plugin_runtime);
             app.manage(CoreState {
@@ -1295,6 +1319,7 @@ mod tests {
             output_controller,
             output_sink,
             events: RuntimeEventLog::default(),
+            preview_sequences: PreviewSequenceAllocator::default(),
         };
         let scan = DeviceScanResult::new(
             arcflow_core::BleAdapterStatus::Ready,
@@ -1351,16 +1376,31 @@ mod tests {
 
     #[test]
     fn submit_wave_window_response_reports_acceptance() {
-        let response =
-            submit_wave_window_response(SubmitOutputResult::new(DeviceId::new("coyote-v3"), true));
+        let response = submit_wave_window_response(
+            SubmitOutputResult::new(DeviceId::new("coyote-v3"), true),
+            7,
+        );
 
         assert_eq!(
             response,
             SubmitWaveWindowResponse {
                 device_id: "coyote-v3".to_owned(),
+                sequence: 7,
                 accepted: true,
             }
         );
+    }
+
+    #[test]
+    fn preview_sequence_allocator_tracks_devices_independently() {
+        let allocator = PreviewSequenceAllocator::default();
+        let first = DeviceId::new("coyote-a");
+        let second = DeviceId::new("coyote-b");
+
+        assert_eq!(allocator.next(&first), 0);
+        assert_eq!(allocator.next(&first), 1);
+        assert_eq!(allocator.next(&second), 0);
+        assert_eq!(allocator.next(&first), 2);
     }
 
     #[test]
