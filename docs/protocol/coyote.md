@@ -13,9 +13,22 @@ Source material:
 
 - Bluetooth connection management stays out of `arcflow-protocol`.
 - `crates/protocol` owns byte-level protocol frames, ranges, and conversion helpers.
+- `crates/core` owns BLE service/characteristic metadata and expands 16-bit UUIDs
+  into canonical Bluetooth base UUID strings for platform adapters.
 - Coyote V2 uses three-byte little-endian bit fields for AB strength and waveform frames.
 - Coyote V3 uses B0 write commands, B1 strength notifications, and BF soft-limit/balance commands.
 - Invalid V3 channel wave values are preserved during parsing because the protocol documents them as a way to make the device ignore a channel.
+
+## BLE UUIDs
+
+| Purpose | Service | Characteristic |
+| --- | --- | --- |
+| Battery | `0x180A` (`0000180a-0000-1000-8000-00805f9b34fb`) | `0x1500` (`00001500-0000-1000-8000-00805f9b34fb`) |
+| Coyote V2 AB strength | `0x180B` (`0000180b-0000-1000-8000-00805f9b34fb`) | `0x1504` (`00001504-0000-1000-8000-00805f9b34fb`) |
+| Coyote V2 A waveform | `0x180B` (`0000180b-0000-1000-8000-00805f9b34fb`) | `0x1505` (`00001505-0000-1000-8000-00805f9b34fb`) |
+| Coyote V2 B waveform | `0x180B` (`0000180b-0000-1000-8000-00805f9b34fb`) | `0x1506` (`00001506-0000-1000-8000-00805f9b34fb`) |
+| Coyote V3 write | `0x180C` (`0000180c-0000-1000-8000-00805f9b34fb`) | `0x150A` (`0000150a-0000-1000-8000-00805f9b34fb`) |
+| Coyote V3 notify | `0x180C` (`0000180c-0000-1000-8000-00805f9b34fb`) | `0x150B` (`0000150b-0000-1000-8000-00805f9b34fb`) |
 
 ## Safety notes
 
