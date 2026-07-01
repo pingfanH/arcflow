@@ -379,7 +379,10 @@ function App() {
     invoke<ExternalControlStatus>("start_external_control", {
       controlMode: externalControlMode,
     })
-      .then(setExternalStatus)
+      .then((result) => {
+        setExternalStatus(result);
+        refreshRuntimeEvents();
+      })
       .catch(() => setExternalStatus(stoppedExternalControl))
       .finally(() => setExternalBusy(false));
   };
@@ -387,7 +390,10 @@ function App() {
   const stopExternalControl = () => {
     setExternalBusy(true);
     invoke<ExternalControlStatus>("stop_external_control")
-      .then(setExternalStatus)
+      .then((result) => {
+        setExternalStatus(result);
+        refreshRuntimeEvents();
+      })
       .catch(() => setExternalStatus(stoppedExternalControl))
       .finally(() => setExternalBusy(false));
   };
@@ -879,6 +885,10 @@ function App() {
                     onControlModeChange={setExternalControlMode}
                     onStart={startExternalControl}
                     onStop={stopExternalControl}
+                  />
+                  <RuntimeEventsPanel
+                    events={runtimeEvents ?? emptyRuntimeEvents}
+                    onRefresh={refreshRuntimeEvents}
                   />
                   <StatusPanel
                     icon={Cable}
