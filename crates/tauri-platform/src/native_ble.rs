@@ -63,13 +63,7 @@ impl NativeBlePlatformProvider {
         }
 
         let adapter = self.adapter().await?;
-        adapter
-            .start_scan(ScanFilter::default())
-            .await
-            .map_err(transport_error)?;
-        sleep(self.scan_duration).await;
-
-        for peripheral in adapter.peripherals().await.map_err(transport_error)? {
+        for peripheral in self.scan_peripherals(&adapter).await? {
             if peripheral.id().to_string() == device_id.as_str() {
                 return Ok(peripheral);
             }
@@ -79,6 +73,23 @@ impl NativeBlePlatformProvider {
             "BLE device `{}` was not found",
             device_id.as_str()
         )))
+    }
+
+    async fn scan_peripherals(&self, adapter: &Adapter) -> Result<Vec<Peripheral>, CoreError> {
+        adapter
+            .start_scan(ScanFilter::default())
+            .await
+            .map_err(transport_error)?;
+        sleep(self.scan_duration).await;
+
+        let peripherals = adapter.peripherals().await.map_err(transport_error);
+        let stop_result = adapter.stop_scan().await.map_err(transport_error);
+
+        match (peripherals, stop_result) {
+            (Ok(peripherals), Ok(())) => Ok(peripherals),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+        }
     }
 
     async fn ensure_connected(&self, device_id: &DeviceId) -> Result<Peripheral, CoreError> {
@@ -147,14 +158,8 @@ impl TauriBleDiscoveryProvider for NativeBlePlatformProvider {
             Err(error) => return Err(error),
         };
 
-        adapter
-            .start_scan(ScanFilter::default())
-            .await
-            .map_err(transport_error)?;
-        sleep(self.scan_duration).await;
-
         let mut advertisements = Vec::new();
-        for peripheral in adapter.peripherals().await.map_err(transport_error)? {
+        for peripheral in self.scan_peripherals(&adapter).await? {
             let Some(properties) = peripheral.properties().await.map_err(transport_error)? else {
                 continue;
             };
