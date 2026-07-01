@@ -20,6 +20,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 arcflow-core.workspace = true
 arcflow-external-control.workspace = true
+arcflow-plugin-runtime.workspace = true
 arcflow-script.workspace = true
 arcflow-storage.workspace = true
 arcflow-tauri-platform.workspace = true

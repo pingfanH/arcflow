@@ -207,6 +207,20 @@ Required capability: `script.manage`
 }
 ```
 
+### `runtime.status`
+
+Required capability: `device.read`
+
+Returns active output device ids and BLE output worker counters.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "method": "runtime.status"
+}
+```
+
 ### `plugin.registry`
 
 Required capability: `plugin.manage`
@@ -214,7 +228,7 @@ Required capability: `plugin.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 8,
+  "id": 9,
   "method": "plugin.registry"
 }
 ```
@@ -226,7 +240,7 @@ Required capability: `plugin.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 9,
+  "id": 10,
   "method": "plugin.installManifest",
   "params": {
     "manifestJson": "{\"id\":\"dev.arcflow.example\",\"name\":\"Example\",\"version\":\"0.1.0\",\"runtime\":\"wasm\",\"entry\":\"dist/plugin.wasm\",\"apiVersion\":\"1\",\"capabilities\":[\"device.read\"]}"
@@ -241,7 +255,7 @@ Required capability: `plugin.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 10,
+  "id": 11,
   "method": "plugin.setEnabled",
   "params": {
     "pluginId": "dev.arcflow.example",

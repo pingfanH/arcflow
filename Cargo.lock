@@ -69,6 +69,7 @@ version = "0.1.0"
 dependencies = [
  "arcflow-core",
  "arcflow-external-control",
+ "arcflow-plugin-runtime",
  "arcflow-script",
  "arcflow-storage",
  "arcflow-tauri-platform",

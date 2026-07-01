@@ -15,6 +15,7 @@ use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
     WsGatewayService, WsRequestHandler, DEFAULT_LOCAL_BIND,
 };
+use arcflow_plugin_runtime::Capability;
 use arcflow_script::ScriptCompiler;
 use arcflow_storage::Storage;
 use arcflow_tauri_platform::{TauriBleDiscoveryController, TauriBleOutputSink, TauriBleTransport};
@@ -35,10 +36,13 @@ struct StorageState {
     database_path: PathBuf,
 }
 
+#[derive(Clone)]
 struct RuntimeState {
     output_controller: Arc<CoyoteV3OutputController<TauriBleOutputSink>>,
     output_sink: TauriBleOutputSink,
 }
+
+const RUNTIME_STATUS_METHOD: &str = "runtime.status";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -144,19 +148,7 @@ fn storage_status(state: tauri::State<'_, StorageState>) -> Result<StorageStatus
 
 #[tauri::command]
 fn runtime_status(state: tauri::State<'_, RuntimeState>) -> RuntimeStatus {
-    let stats = state.output_sink.stats();
-
-    RuntimeStatus {
-        active_output_devices: state
-            .output_controller
-            .active_devices()
-            .into_iter()
-            .map(|device_id| device_id.as_str().to_owned())
-            .collect(),
-        ble_output_queued: stats.queued,
-        ble_output_written: stats.written,
-        ble_output_failed: stats.failed,
-    }
+    runtime_status_from_state(&state)
 }
 
 #[tauri::command]
@@ -311,6 +303,7 @@ async fn start_external_control(
     state: tauri::State<'_, ExternalControlState>,
     core_state: tauri::State<'_, CoreState>,
     storage_state: tauri::State<'_, StorageState>,
+    runtime_state: tauri::State<'_, RuntimeState>,
 ) -> Result<ExternalControlStatus, String> {
     {
         let guard = state
@@ -328,6 +321,7 @@ async fn start_external_control(
         .start(external_request_handler(
             core_state.core.clone(),
             Arc::clone(&storage_state.storage),
+            runtime_state.inner().clone(),
         ))
         .await
         .map_err(|error| error.to_string())?;
@@ -394,10 +388,15 @@ fn external_control_status_from_handle(handle: &WsGatewayHandle) -> ExternalCont
     }
 }
 
-fn external_request_handler(core: ArcFlowCore, storage: Arc<Mutex<Storage>>) -> WsRequestHandler {
+fn external_request_handler(
+    core: ArcFlowCore,
+    storage: Arc<Mutex<Storage>>,
+    runtime: RuntimeState,
+) -> WsRequestHandler {
     Arc::new(move |session: ClientSession, request: JsonRpcRequest| {
         let core = core.clone();
         let storage = Arc::clone(&storage);
+        let runtime = runtime.clone();
 
         Box::pin(async move {
             let id = request.id.clone();
@@ -430,12 +429,57 @@ fn external_request_handler(core: ArcFlowCore, storage: Arc<Mutex<Storage>>) -> 
                 };
             }
 
+            if request.method == RUNTIME_STATUS_METHOD {
+                let response = execute_runtime_status_external_request(&session, &runtime);
+
+                return match response {
+                    Ok(result) => JsonRpcResponse::ok(id, result),
+                    Err(error) => JsonRpcResponse::error(id, error),
+                };
+            }
+
             match core.execute_external_request(&session, &request).await {
                 Ok(result) => JsonRpcResponse::ok(id, result),
                 Err(error) => JsonRpcResponse::error(id, RpcError::new(-32000, error.to_string())),
             }
         })
     })
+}
+
+fn execute_runtime_status_external_request(
+    session: &ClientSession,
+    runtime: &RuntimeState,
+) -> Result<serde_json::Value, RpcError> {
+    if !session.has_capability(Capability::DeviceRead) {
+        return Err(RpcError::new(
+            -32000,
+            format!(
+                "session `{}` is missing required capability `{}` for `{}`",
+                session.client_name(),
+                Capability::DeviceRead.as_str(),
+                RUNTIME_STATUS_METHOD
+            ),
+        ));
+    }
+
+    serde_json::to_value(runtime_status_from_state(runtime))
+        .map_err(|error| RpcError::new(-32000, error.to_string()))
+}
+
+fn runtime_status_from_state(runtime: &RuntimeState) -> RuntimeStatus {
+    let stats = runtime.output_sink.stats();
+
+    RuntimeStatus {
+        active_output_devices: runtime
+            .output_controller
+            .active_devices()
+            .into_iter()
+            .map(|device_id| device_id.as_str().to_owned())
+            .collect(),
+        ble_output_queued: stats.queued,
+        ble_output_written: stats.written,
+        ble_output_failed: stats.failed,
+    }
 }
 
 fn device_scan_response(result: DeviceScanResult) -> DeviceScanResponse {
