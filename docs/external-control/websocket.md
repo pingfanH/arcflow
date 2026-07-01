@@ -325,7 +325,7 @@ plugins currently loaded into the sandboxed runtime.
 
 ### `runtime.events`
 
-Required capability: `device.read`
+Required capability: `events.subscribe`
 
 Returns the recent in-memory runtime event log for script and BLE output worker
 events.

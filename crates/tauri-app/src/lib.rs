@@ -1085,12 +1085,7 @@ fn execute_runtime_events_external_request(
     session: &ClientSession,
     runtime: &RuntimeState,
 ) -> Result<serde_json::Value, RpcError> {
-    if !session.has_capability(Capability::DeviceRead) {
-        return Err(runtime_read_capability_error(
-            session,
-            RUNTIME_EVENTS_METHOD,
-        ));
-    }
+    authorize_external_capability(session, RUNTIME_EVENTS_METHOD, Capability::EventsSubscribe)?;
 
     serde_json::to_value(runtime_events_from_state(runtime))
         .map_err(|error| RpcError::new(-32000, error.to_string()))
@@ -1768,6 +1763,30 @@ mod tests {
         assert_eq!(error.code, -32000);
         assert!(error.message.contains("plugin.manage"));
         assert!(error.message.contains(RUNTIME_PLUGINS_METHOD));
+    }
+
+    #[tokio::test]
+    async fn runtime_events_request_requires_events_subscribe() {
+        let (runtime, _) = runtime_state_with_core();
+        let session = session_with(vec![Capability::DeviceRead]);
+
+        let error = execute_runtime_events_external_request(&session, &runtime).unwrap_err();
+
+        assert_eq!(error.code, -32000);
+        assert!(error.message.contains("events.subscribe"));
+        assert!(error.message.contains(RUNTIME_EVENTS_METHOD));
+    }
+
+    #[tokio::test]
+    async fn runtime_events_request_accepts_events_subscribe_without_device_read() {
+        let (runtime, _) = runtime_state_with_core();
+        runtime.events.push("runtime.ready", "runtime ready");
+        let session = session_with(vec![Capability::EventsSubscribe]);
+
+        let response = execute_runtime_events_external_request(&session, &runtime).unwrap();
+
+        assert_eq!(response["events"][0]["kind"], "runtime.ready");
+        assert_eq!(response["events"][0]["message"], "runtime ready");
     }
 
     #[tokio::test]
