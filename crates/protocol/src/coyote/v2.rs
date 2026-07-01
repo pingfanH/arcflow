@@ -6,50 +6,14 @@
 
 use crate::ProtocolError;
 
-const BATTERY_LEVEL_LEN: usize = 1;
 const U24_LEN: usize = 3;
-const MAX_BATTERY_PERCENT: u8 = 100;
 const MAX_CHANNEL_STRENGTH: u16 = 2047;
 const MAX_X: u8 = 31;
 const MAX_Y: u16 = 1023;
 const MAX_Z: u8 = 31;
 
-/// Battery level reported by the Coyote V2 battery characteristic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BatteryLevel {
-    percent: u8,
-}
-
-impl BatteryLevel {
-    /// Constructs a battery level in the documented `0..=100` range.
-    pub fn new(percent: u8) -> Result<Self, ProtocolError> {
-        ensure_range(
-            "v2 battery level",
-            u16::from(percent),
-            0,
-            u16::from(MAX_BATTERY_PERCENT),
-        )?;
-        Ok(Self { percent })
-    }
-
-    /// Parses the one-byte battery characteristic payload.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self, ProtocolError> {
-        ensure_len("v2 battery level", bytes, BATTERY_LEVEL_LEN)?;
-        Self::new(bytes[0])
-    }
-
-    /// Returns the battery percentage.
-    #[must_use]
-    pub fn percent(self) -> u8 {
-        self.percent
-    }
-
-    /// Encodes the battery level as a single byte.
-    #[must_use]
-    pub fn to_byte(self) -> u8 {
-        self.percent
-    }
-}
+/// Shared Coyote battery level type, kept here for V2 import compatibility.
+pub use super::BatteryLevel;
 
 /// Packed V2 AB channel strength frame from the `PWM_AB2` characteristic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

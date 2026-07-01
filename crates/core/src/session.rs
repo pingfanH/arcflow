@@ -1,6 +1,9 @@
 //! Device sessions built over BLE transport Adapters.
 
-use arcflow_protocol::coyote::v3::{B1Notification, StrengthModes};
+use arcflow_protocol::coyote::{
+    v3::{B1Notification, StrengthModes},
+    BatteryLevel,
+};
 use arcflow_wave::CoyoteV3Window;
 
 use crate::{
@@ -103,6 +106,20 @@ where
 
         Ok(Some(
             B1Notification::from_bytes(&notification.payload)?.into(),
+        ))
+    }
+
+    /// Parses a Coyote battery notification into a percentage.
+    pub fn parse_coyote_battery_notification(
+        &self,
+        notification: &BleNotification,
+    ) -> Result<Option<u8>, CoreError> {
+        if notification.characteristic != BleCharacteristic::CoyoteBattery {
+            return Ok(None);
+        }
+
+        Ok(Some(
+            BatteryLevel::from_bytes(&notification.payload)?.percent(),
         ))
     }
 }
@@ -245,5 +262,41 @@ mod tests {
             .unwrap();
 
         assert_eq!(status, None);
+    }
+
+    #[test]
+    fn parses_coyote_battery_notification() {
+        let session = DeviceSession::new(
+            DeviceId::new("coyote-v3"),
+            FakeTransport::default(),
+            SafetyLimits::conservative(),
+        );
+
+        let percent = session
+            .parse_coyote_battery_notification(&BleNotification {
+                characteristic: BleCharacteristic::CoyoteBattery,
+                payload: vec![87],
+            })
+            .unwrap();
+
+        assert_eq!(percent, Some(87));
+    }
+
+    #[test]
+    fn ignores_non_battery_notification_for_battery_status() {
+        let session = DeviceSession::new(
+            DeviceId::new("coyote-v3"),
+            FakeTransport::default(),
+            SafetyLimits::conservative(),
+        );
+
+        let percent = session
+            .parse_coyote_battery_notification(&BleNotification {
+                characteristic: BleCharacteristic::CoyoteV3Notify,
+                payload: vec![0xB1, 0x01, 0x19, 0x05],
+            })
+            .unwrap();
+
+        assert_eq!(percent, None);
     }
 }

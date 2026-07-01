@@ -15,6 +15,8 @@ Source material:
 - `crates/protocol` owns byte-level protocol frames, ranges, and conversion helpers.
 - `crates/core` owns BLE service/characteristic metadata and expands 16-bit UUIDs
   into canonical Bluetooth base UUID strings for platform adapters.
+- The `0x180A` / `0x1500` battery characteristic is parsed as a shared Coyote
+  one-byte `0..=100` percentage instead of being tied to one protocol version.
 - Coyote V2 uses three-byte little-endian bit fields for AB strength and waveform frames.
 - Coyote V3 uses B0 write commands, B1 strength notifications, and BF soft-limit/balance commands.
 - Invalid V3 channel wave values are preserved during parsing because the protocol documents them as a way to make the device ignore a channel.
