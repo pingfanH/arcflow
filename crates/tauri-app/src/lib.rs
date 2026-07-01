@@ -839,12 +839,14 @@ async fn start_external_control(
         return Ok(existing_status);
     }
 
+    log_external_control_started(&runtime_state.events, &status);
     Ok(status)
 }
 
 #[tauri::command]
 async fn stop_external_control(
     state: tauri::State<'_, ExternalControlState>,
+    runtime_state: tauri::State<'_, RuntimeState>,
 ) -> Result<ExternalControlStatus, String> {
     let handle = {
         let mut guard = state
@@ -855,8 +857,10 @@ async fn stop_external_control(
         guard.take()
     };
 
-    if let Some(handle) = handle {
-        handle.handle.stop().await;
+    if let Some(running) = handle {
+        let status = external_control_status_from_running(&running);
+        running.handle.stop().await;
+        log_external_control_stopped(&runtime_state.events, &status);
     }
 
     Ok(stopped_external_control_status())
@@ -902,6 +906,27 @@ fn external_control_status_from_running(running: &RunningExternalControl) -> Ext
         control_mode: running.control_mode,
         allowed_capabilities: running.allowed_capabilities.clone(),
     }
+}
+
+fn log_external_control_started(events: &RuntimeEventLog, status: &ExternalControlStatus) {
+    let mode = if status.control_mode {
+        "control"
+    } else {
+        "read-only"
+    };
+    let bind = status.bind_address.as_deref().unwrap_or(DEFAULT_LOCAL_BIND);
+    events.push(
+        "plugin.bridge.started",
+        format!("plugin bridge started at `{bind}` in {mode} mode"),
+    );
+}
+
+fn log_external_control_stopped(events: &RuntimeEventLog, status: &ExternalControlStatus) {
+    let bind = status.bind_address.as_deref().unwrap_or(DEFAULT_LOCAL_BIND);
+    events.push(
+        "plugin.bridge.stopped",
+        format!("plugin bridge stopped at `{bind}`"),
+    );
 }
 
 fn external_request_handler(
@@ -2345,5 +2370,29 @@ mod tests {
         assert!(capabilities.contains(&Capability::ScriptRun));
         assert!(capabilities.contains(&Capability::ScriptManage));
         assert!(capabilities.contains(&Capability::PluginManage));
+    }
+
+    #[test]
+    fn logs_external_control_lifecycle_events() {
+        let events = RuntimeEventLog::default();
+        let started = ExternalControlStatus {
+            running: true,
+            bind_address: Some("127.0.0.1:49152".to_owned()),
+            accepted_sessions: 0,
+            active_sessions: 0,
+            control_mode: true,
+            allowed_capabilities: vec![Capability::ExternalWebSocket, Capability::PluginManage],
+        };
+
+        log_external_control_started(&events, &started);
+        log_external_control_stopped(&events, &started);
+
+        let records = events.list();
+        assert_eq!(records[0].kind, "plugin.bridge.started");
+        assert!(records[0]
+            .message
+            .contains("127.0.0.1:49152` in control mode"));
+        assert_eq!(records[1].kind, "plugin.bridge.stopped");
+        assert!(records[1].message.contains("127.0.0.1:49152"));
     }
 }

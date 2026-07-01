@@ -75,7 +75,8 @@ and still require the plugin manifest capabilities.
 
 Clients granted `events.subscribe` receive pushed WebSocket event envelopes for
 runtime events. Polling through `runtime.events` remains available for clients
-that only need snapshots.
+that only need snapshots. Plugin bridge lifecycle changes emit
+`plugin.bridge.started` and `plugin.bridge.stopped` events.
 
 Preview playback uses the same Rust-owned backend session as the shared
 desktop/mobile UI. External software does not stream Bluetooth frames directly:
