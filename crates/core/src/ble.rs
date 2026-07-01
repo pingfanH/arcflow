@@ -58,6 +58,24 @@ impl BleCharacteristic {
             Self::CoyoteV3Notify => 0x150B,
         }
     }
+
+    /// Returns the canonical 128-bit Bluetooth service UUID string.
+    #[must_use]
+    pub fn service_uuid(self) -> String {
+        bluetooth_base_uuid(self.service_short_uuid())
+    }
+
+    /// Returns the canonical 128-bit Bluetooth characteristic UUID string.
+    #[must_use]
+    pub fn uuid(self) -> String {
+        bluetooth_base_uuid(self.short_uuid())
+    }
+}
+
+/// Converts a 16-bit Bluetooth UUID into the canonical 128-bit UUID string.
+#[must_use]
+pub fn bluetooth_base_uuid(short_uuid: u16) -> String {
+    format!("0000{short_uuid:04x}-0000-1000-8000-00805f9b34fb")
 }
 
 /// BLE advertisement discovered by a platform Adapter.
@@ -207,12 +225,28 @@ mod tests {
         );
         assert_eq!(BleCharacteristic::CoyoteV3Write.short_uuid(), 0x150A);
         assert_eq!(
+            BleCharacteristic::CoyoteV3Write.service_uuid(),
+            "0000180c-0000-1000-8000-00805f9b34fb"
+        );
+        assert_eq!(
+            BleCharacteristic::CoyoteV3Write.uuid(),
+            "0000150a-0000-1000-8000-00805f9b34fb"
+        );
+        assert_eq!(
             BleCharacteristic::CoyoteV2PwmA34.service_short_uuid(),
             0x180B
         );
         assert_eq!(
             BleCharacteristic::CoyoteBattery.service_short_uuid(),
             0x180A
+        );
+    }
+
+    #[test]
+    fn expands_bluetooth_base_uuids() {
+        assert_eq!(
+            bluetooth_base_uuid(0x180A),
+            "0000180a-0000-1000-8000-00805f9b34fb"
         );
     }
 
