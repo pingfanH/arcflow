@@ -6,6 +6,7 @@ import {
   Cable,
   Database,
   FileCode,
+  FolderPlus,
   Gauge,
   Pause,
   Play,
@@ -86,6 +87,7 @@ type PluginRegistryEntry = {
   apiVersion: string;
   capabilities: string[];
   enabled: boolean;
+  bundleRoot: string | null;
 };
 
 type PluginRegistryResponse = {
@@ -188,6 +190,7 @@ function App() {
   const [scanBusy, setScanBusy] = useState(false);
   const [stopBusy, setStopBusy] = useState(false);
   const [pluginBusy, setPluginBusy] = useState(false);
+  const [pluginBundlePath, setPluginBundlePath] = useState("");
   const [scriptBusy, setScriptBusy] = useState(false);
   const [deviceOnline, setDeviceOnline] = useState(false);
   const [playing, setPlaying] = useState(false);
@@ -301,6 +304,24 @@ function App() {
     })
       .then((result) => {
         setPluginRegistry(result);
+        refreshRuntimeStatus();
+        refreshRuntimeEvents();
+      })
+      .catch(refreshPluginRegistry)
+      .finally(() => setPluginBusy(false));
+  };
+
+  const installPluginBundle = () => {
+    const bundlePath = pluginBundlePath.trim();
+    if (!bundlePath) {
+      return;
+    }
+
+    setPluginBusy(true);
+    invoke<PluginRegistryResponse>("install_plugin_bundle", { bundlePath })
+      .then((result) => {
+        setPluginRegistry(result);
+        setPluginBundlePath("");
         refreshRuntimeStatus();
         refreshRuntimeEvents();
       })
@@ -518,9 +539,12 @@ function App() {
               />
               <PluginRegistryPanel
                 busy={pluginBusy}
+                bundlePath={pluginBundlePath}
                 registry={pluginRegistry ?? emptyPluginRegistry}
                 runtimes={status?.pluginRuntimes ?? ["wasm", "javascript"]}
                 onDelete={deletePlugin}
+                onBundlePathChange={setPluginBundlePath}
+                onInstallBundle={installPluginBundle}
                 onInstallStarter={installStarterPlugin}
                 onRefresh={refreshPluginRegistry}
                 onSetEnabled={setPluginEnabled}
@@ -727,9 +751,12 @@ function ScriptsPanel({
 
 type PluginRegistryPanelProps = {
   busy: boolean;
+  bundlePath: string;
   registry: PluginRegistryResponse;
   runtimes: string[];
+  onBundlePathChange: (path: string) => void;
   onDelete: (pluginId: string) => void;
+  onInstallBundle: () => void;
   onInstallStarter: () => void;
   onRefresh: () => void;
   onSetEnabled: (pluginId: string, enabled: boolean) => void;
@@ -737,9 +764,12 @@ type PluginRegistryPanelProps = {
 
 function PluginRegistryPanel({
   busy,
+  bundlePath,
   registry,
   runtimes,
+  onBundlePathChange,
   onDelete,
+  onInstallBundle,
   onInstallStarter,
   onRefresh,
   onSetEnabled,
@@ -778,6 +808,26 @@ function PluginRegistryPanel({
         </button>
       </div>
 
+      <div className="mt-3 flex gap-2">
+        <input
+          className="h-9 min-w-0 flex-1 rounded-lg border border-zinc-200 bg-white px-3 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-teal-500"
+          disabled={busy}
+          placeholder="Bundle path"
+          type="text"
+          value={bundlePath}
+          onChange={(event) => onBundlePathChange(event.currentTarget.value)}
+        />
+        <button
+          className="grid size-9 place-items-center rounded-lg bg-zinc-900 text-white hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={busy || bundlePath.trim().length === 0}
+          title="Install plugin bundle"
+          type="button"
+          onClick={onInstallBundle}
+        >
+          <FolderPlus size={16} />
+        </button>
+      </div>
+
       <div className="mt-3 space-y-2">
         {registry.plugins.length === 0 ? (
           <div className="rounded-lg bg-zinc-50 px-3 py-2 text-sm text-zinc-500">
@@ -794,6 +844,9 @@ function PluginRegistryPanel({
                   <div className="truncate text-xs text-zinc-500">
                     {plugin.runtime} - API {plugin.apiVersion}
                   </div>
+                  {plugin.bundleRoot ? (
+                    <div className="truncate text-xs text-zinc-500">{plugin.bundleRoot}</div>
+                  ) : null}
                 </div>
                 <button
                   className={`grid size-8 place-items-center rounded-lg border ${
