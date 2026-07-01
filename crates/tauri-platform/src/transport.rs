@@ -3,6 +3,7 @@
 use std::{
     fmt,
     sync::{Arc, Mutex},
+    thread,
 };
 
 use arcflow_core::{
@@ -156,38 +157,50 @@ impl TauriBleOutputSink {
         let stats = Arc::new(Mutex::new(TauriBleOutputStats::default()));
         let worker_stats = Arc::clone(&stats);
 
-        tokio::spawn(async move {
-            while let Some(command) = receiver.recv().await {
-                let request =
-                    TauriBleWriteRequest::new(command.device_id.clone(), command.write.clone());
-                let event = match provider.write(request).await {
-                    Ok(()) => {
-                        worker_stats
-                            .lock()
-                            .expect("tauri BLE output stats mutex poisoned")
-                            .written += 1;
-                        TauriBleOutputEvent::Written {
-                            device_id: command.device_id,
-                            characteristic: command.write.characteristic,
+        thread::Builder::new()
+            .name("arcflow-tauri-ble-output".to_owned())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("tauri BLE output runtime should start");
+
+                runtime.block_on(async move {
+                    while let Some(command) = receiver.recv().await {
+                        let request = TauriBleWriteRequest::new(
+                            command.device_id.clone(),
+                            command.write.clone(),
+                        );
+                        let event = match provider.write(request).await {
+                            Ok(()) => {
+                                worker_stats
+                                    .lock()
+                                    .expect("tauri BLE output stats mutex poisoned")
+                                    .written += 1;
+                                TauriBleOutputEvent::Written {
+                                    device_id: command.device_id,
+                                    characteristic: command.write.characteristic,
+                                }
+                            }
+                            Err(error) => TauriBleOutputEvent::Failed {
+                                device_id: command.device_id,
+                                error: {
+                                    worker_stats
+                                        .lock()
+                                        .expect("tauri BLE output stats mutex poisoned")
+                                        .failed += 1;
+                                    error.to_string()
+                                },
+                            },
+                        };
+
+                        if let Some(event_sink) = &event_sink {
+                            let _ = event_sink.send(event);
                         }
                     }
-                    Err(error) => TauriBleOutputEvent::Failed {
-                        device_id: command.device_id,
-                        error: {
-                            worker_stats
-                                .lock()
-                                .expect("tauri BLE output stats mutex poisoned")
-                                .failed += 1;
-                            error.to_string()
-                        },
-                    },
-                };
-
-                if let Some(event_sink) = &event_sink {
-                    let _ = event_sink.send(event);
-                }
-            }
-        });
+                });
+            })
+            .expect("tauri BLE output worker thread should start");
 
         Self { sender, stats }
     }

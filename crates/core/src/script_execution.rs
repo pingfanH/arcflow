@@ -1,6 +1,6 @@
 //! Safe script execution orchestration.
 
-use std::{fmt, sync::Arc, time::Duration};
+use std::{fmt, sync::Arc, thread, time::Duration};
 
 use arcflow_script::{CompiledScript, ScriptStep};
 use async_trait::async_trait;
@@ -120,22 +120,32 @@ impl ScriptWorkerQueue {
         let (sender, mut receiver) = mpsc::unbounded_channel::<CompiledScript>();
         let engine = ScriptExecutionEngine::new(actions);
 
-        tokio::spawn(async move {
-            while let Some(script) = receiver.recv().await {
-                let script_id = script.id().to_owned();
-                let event = match engine.execute(&script).await {
-                    Ok(report) => ScriptWorkerEvent::Completed(report),
-                    Err(error) => ScriptWorkerEvent::Failed {
-                        script_id,
-                        error: error.to_string(),
-                    },
-                };
+        thread::Builder::new()
+            .name("arcflow-script-worker".to_owned())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("script worker runtime should start");
 
-                if let Some(event_sink) = &event_sink {
-                    let _ = event_sink.send(event);
-                }
-            }
-        });
+                runtime.block_on(async move {
+                    while let Some(script) = receiver.recv().await {
+                        let script_id = script.id().to_owned();
+                        let event = match engine.execute(&script).await {
+                            Ok(report) => ScriptWorkerEvent::Completed(report),
+                            Err(error) => ScriptWorkerEvent::Failed {
+                                script_id,
+                                error: error.to_string(),
+                            },
+                        };
+
+                        if let Some(event_sink) = &event_sink {
+                            let _ = event_sink.send(event);
+                        }
+                    }
+                });
+            })
+            .expect("script worker thread should start");
 
         Self { sender }
     }
