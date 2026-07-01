@@ -14,6 +14,7 @@ pub mod registry;
 pub mod router;
 pub mod runtime;
 pub mod sandbox;
+pub mod wasm;
 
 pub use capability::Capability;
 pub use host::{PluginHost, PluginHostError};
@@ -28,3 +29,4 @@ pub use runtime::{
     RuntimeHandle,
 };
 pub use sandbox::{SandboxPolicy, SandboxPolicyError, SandboxedRuntime, UnavailableRuntimeAdapter};
+pub use wasm::WasmValidationRuntimeAdapter;

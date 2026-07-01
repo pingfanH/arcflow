@@ -74,11 +74,11 @@ runtimes at `.js` or `.mjs` entries.
 Runtime engines exchange JSON envelopes with Rust Core. The stable invocation
 and output shape is documented in `docs/plugins/runtime-abi.md`.
 
-The current runtime implementation includes a recording adapter for both WASM
-and JavaScript. It validates sandbox admission, records load/invoke/unload
-events, and returns empty plugin output so host wiring can be tested without
-executing untrusted code. Real engines will replace the adapter behind the same
-`RuntimeAdapter` boundary.
+The current runtime implementation includes a recording adapter for JavaScript
+and a WASM validation adapter that reads bundle entry bytes and validates the
+module before recording lifecycle events. Runtime invocation still returns empty
+plugin output while the engine call convention is being attached. Real engines
+will replace these adapters behind the same `RuntimeAdapter` boundary.
 
 Desktop startup restores the persisted plugin registry into this sandboxed
 runtime host. UI and WebSocket plugin registry mutations update SQLite first,
