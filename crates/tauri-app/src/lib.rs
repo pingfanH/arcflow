@@ -10,11 +10,11 @@ use arcflow_core::{
     is_script_documents_external_request, ArcFlowCore, CoreScriptActionExecutor,
     CoyoteV3OutputController, CoyoteV3OutputRequest, CoyoteV3PreviewSession,
     CoyoteV3SequenceAllocator, DeviceDiscoveryController, DeviceId, DeviceModel,
-    DeviceOutputController, DeviceScanResult, DeviceStatus, PluginBundle, PluginRegistryEntry,
-    PluginRegistryPersistence, PluginRuntimeSyncReport, RecordingPluginRuntimeController,
-    RecordingPluginRuntimeHookInvoker, SafetyLimits, ScriptDocumentEntry,
-    ScriptDocumentPersistence, ScriptWorkerEvent, ScriptWorkerQueue, StopOutputResult,
-    StorageScriptRunner, SubmitOutputResult, COYOTE_V3_PREVIEW_INTERVAL_MS,
+    DeviceOutputController, DeviceScanResult, DeviceStatus, PluginApi, PluginBundle,
+    PluginRegistryEntry, PluginRegistryPersistence, PluginRuntimeSyncReport,
+    RecordingPluginRuntimeController, RecordingPluginRuntimeHookInvoker, SafetyLimits,
+    ScriptDocumentEntry, ScriptDocumentPersistence, ScriptWorkerEvent, ScriptWorkerQueue,
+    StopOutputResult, StorageScriptRunner, SubmitOutputResult, COYOTE_V3_PREVIEW_INTERVAL_MS,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, ServerEvent,
@@ -28,6 +28,7 @@ use arcflow_tauri_platform::{
     UnsupportedTauriBleTransportProvider,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tauri::Manager;
 use tokio::{
     sync::{broadcast, mpsc, oneshot, Mutex as AsyncMutex},
@@ -75,7 +76,9 @@ struct StorageState {
 
 #[derive(Clone)]
 struct RuntimeState {
+    discovery_controller: Arc<dyn DeviceDiscoveryController>,
     output_controller: Arc<CoyoteV3OutputController<TauriBleOutputSink>>,
+    output_host: Arc<dyn DeviceOutputController>,
     output_sink: TauriBleOutputSink,
     events: RuntimeEventLog,
     preview_sequences: Arc<Mutex<CoyoteV3SequenceAllocator>>,
@@ -90,6 +93,7 @@ struct PluginRuntimeState {
 const RUNTIME_STATUS_METHOD: &str = "runtime.status";
 const RUNTIME_EVENTS_METHOD: &str = "runtime.events";
 const RUNTIME_PLUGINS_METHOD: &str = "runtime.plugins";
+const PLUGIN_INVOKE_HOOK_METHOD: &str = "plugin.invokeHook";
 const WAVE_PREVIEW_STATUS_METHOD: &str = "wave.previewStatus";
 const WAVE_PREVIEW_START_METHOD: &str = "wave.startPreview";
 const WAVE_PREVIEW_STOP_METHOD: &str = "wave.stopPreview";
@@ -260,6 +264,15 @@ struct StartPreviewPlaybackParams {
     channel_b_strength: u8,
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginHookInvocationParams {
+    plugin_id: String,
+    hook: String,
+    #[serde(default)]
+    payload: Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StorageStatus {
@@ -296,6 +309,15 @@ struct RuntimePluginSnapshot {
     runtime: RuntimeKind,
     entry: String,
     bundle_root: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PluginHookInvocationResponse {
+    plugin_id: String,
+    hook: String,
+    action_count: usize,
+    results: Vec<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -985,6 +1007,22 @@ fn external_request_handler(
                 };
             }
 
+            if request.method == PLUGIN_INVOKE_HOOK_METHOD {
+                let response = execute_plugin_hook_external_request(
+                    &session,
+                    &request,
+                    &storage,
+                    &runtime,
+                    &plugin_runtime,
+                )
+                .await;
+
+                return match response {
+                    Ok(result) => JsonRpcResponse::ok(id, result),
+                    Err(error) => JsonRpcResponse::error(id, error),
+                };
+            }
+
             match core.execute_external_request(&session, &request).await {
                 Ok(result) => JsonRpcResponse::ok(id, result),
                 Err(error) => JsonRpcResponse::error(id, RpcError::new(-32000, error.to_string())),
@@ -1123,6 +1161,42 @@ async fn execute_runtime_plugins_external_request(
 
     serde_json::to_value(runtime_plugins_from_state(plugin_runtime).await)
         .map_err(|error| RpcError::new(-32000, error.to_string()))
+}
+
+async fn execute_plugin_hook_external_request(
+    session: &ClientSession,
+    request: &JsonRpcRequest,
+    storage: &Arc<Mutex<Storage>>,
+    runtime: &RuntimeState,
+    plugin_runtime: &PluginRuntimeState,
+) -> Result<Value, RpcError> {
+    authorize_external_capability(session, PLUGIN_INVOKE_HOOK_METHOD, Capability::PluginManage)?;
+    let params: PluginHookInvocationParams = read_external_params(request)?;
+    let (manifest, output) = {
+        let controller = plugin_runtime.controller.lock().await;
+        controller
+            .invoke_hook_with_manifest(&params.plugin_id, &params.hook, params.payload.clone())
+            .await
+            .map_err(|error| RpcError::new(-32000, error.to_string()))?
+    };
+    let action_count = output.actions.len();
+    let api = PluginApi::with_host_controllers(
+        Arc::clone(storage),
+        Arc::clone(&runtime.discovery_controller),
+        Arc::clone(&runtime.output_host),
+    );
+    let results = api
+        .handle_output(&manifest, output)
+        .await
+        .map_err(|error| RpcError::new(-32000, error.to_string()))?;
+
+    serde_json::to_value(PluginHookInvocationResponse {
+        plugin_id: params.plugin_id,
+        hook: params.hook,
+        action_count,
+        results,
+    })
+    .map_err(|error| RpcError::new(-32000, error.to_string()))
 }
 
 fn runtime_read_capability_error(session: &ClientSession, method: &str) -> RpcError {
@@ -1597,7 +1671,9 @@ where
                 database_path,
             });
             app.manage(RuntimeState {
+                discovery_controller: Arc::clone(&discovery_controller),
                 output_controller,
+                output_host: Arc::clone(&core_output_controller),
                 output_sink,
                 events,
                 preview_sequences: Arc::new(Mutex::new(CoyoteV3SequenceAllocator::default())),
@@ -1650,7 +1726,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     use arcflow_external_control::{ClientHello, PROTOCOL_VERSION};
     use arcflow_plugin_runtime::{PluginManifest, PluginRegistry};
@@ -1696,19 +1777,54 @@ mod tests {
             SafetyLimits::conservative(),
             output_sink.clone(),
         ));
+        let discovery_controller: Arc<dyn DeviceDiscoveryController> =
+            Arc::new(TauriBleDiscoveryController::unsupported());
         let core_output_controller: Arc<dyn DeviceOutputController> = output_controller.clone();
         let core = ArcFlowCore::with_output_controller(
             SafetyLimits::conservative(),
-            core_output_controller,
+            Arc::clone(&core_output_controller),
         );
         let runtime = RuntimeState {
+            discovery_controller,
             output_controller,
+            output_host: core_output_controller,
             output_sink,
             events: RuntimeEventLog::default(),
             preview_sequences: Arc::new(Mutex::new(CoyoteV3SequenceAllocator::default())),
         };
 
         (runtime, core)
+    }
+
+    fn test_bundle_root(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("arcflow-tauri-plugin-{name}-{suffix}"))
+    }
+
+    fn write_javascript_bundle(name: &str, plugin_id: &str, source: &[u8]) -> PathBuf {
+        let root = test_bundle_root(name);
+        let entry_path = root.join("dist/plugin.js");
+        fs::create_dir_all(entry_path.parent().unwrap()).unwrap();
+        fs::write(entry_path, source).unwrap();
+        fs::write(
+            root.join("manifest.json"),
+            format!(
+                r#"{{
+                    "id":"{plugin_id}",
+                    "name":"External Hook Plugin",
+                    "version":"0.1.0",
+                    "runtime":"javascript",
+                    "entry":"dist/plugin.js",
+                    "apiVersion":"1",
+                    "capabilities":["storage.private"]
+                }}"#
+            ),
+        )
+        .unwrap();
+        root
     }
 
     #[tokio::test]
@@ -1764,6 +1880,111 @@ mod tests {
         assert_eq!(error.code, -32000);
         assert!(error.message.contains("plugin.manage"));
         assert!(error.message.contains(RUNTIME_PLUGINS_METHOD));
+    }
+
+    #[tokio::test]
+    async fn plugin_hook_external_request_requires_plugin_manage() {
+        let storage = Arc::new(Mutex::new(Storage::in_memory().unwrap()));
+        let (runtime, _) = runtime_state_with_core();
+        let state = empty_plugin_runtime_state();
+        let session = session_with(vec![Capability::DeviceRead]);
+        let request = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(30),
+            PLUGIN_INVOKE_HOOK_METHOD,
+            Some(serde_json::json!({
+                "pluginId": "plugin.js",
+                "hook": "external.ping"
+            })),
+        );
+
+        let error =
+            execute_plugin_hook_external_request(&session, &request, &storage, &runtime, &state)
+                .await
+                .unwrap_err();
+
+        assert_eq!(error.code, -32000);
+        assert!(error.message.contains("plugin.manage"));
+        assert!(error.message.contains(PLUGIN_INVOKE_HOOK_METHOD));
+    }
+
+    #[tokio::test]
+    async fn plugin_hook_external_request_routes_output_through_plugin_api() {
+        let storage = Arc::new(Mutex::new(Storage::in_memory().unwrap()));
+        let (runtime, _) = runtime_state_with_core();
+        let state = empty_plugin_runtime_state();
+        let bundle_root = write_javascript_bundle(
+            "invoke-hook",
+            "plugin.js",
+            br#"export const arcflowPlugin = {
+                "hooks": {
+                    "external.connected": {
+                        "actions": [
+                            {
+                                "method": "storage.private.put",
+                                "params": {
+                                    "key": "lastExternalPayload",
+                                    "value": {"source": "ws"}
+                                }
+                            }
+                        ]
+                    }
+                }
+            };"#,
+        );
+        let mut registry = PluginRegistry::new();
+        let plugin = PluginManifest {
+            id: "plugin.js".to_owned(),
+            name: "Plugin".to_owned(),
+            version: "1.0.0".to_owned(),
+            runtime: RuntimeKind::JavaScript,
+            entry: "dist/plugin.js".to_owned(),
+            api_version: "1".to_owned(),
+            capabilities: vec![Capability::StoragePrivate],
+        };
+        registry
+            .install_with_bundle_root(plugin, bundle_root.display().to_string())
+            .unwrap();
+        registry.enable("plugin.js").unwrap();
+        state
+            .controller
+            .lock()
+            .await
+            .sync_from_registry(&registry)
+            .await
+            .unwrap();
+        let session = session_with(vec![Capability::PluginManage]);
+        let request = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(31),
+            PLUGIN_INVOKE_HOOK_METHOD,
+            Some(serde_json::json!({
+                "pluginId": "plugin.js",
+                "hook": "external.connected",
+                "payload": {"clientName": "test"}
+            })),
+        );
+
+        let response =
+            execute_plugin_hook_external_request(&session, &request, &storage, &runtime, &state)
+                .await
+                .unwrap();
+
+        assert_eq!(response["pluginId"], "plugin.js");
+        assert_eq!(response["hook"], "external.connected");
+        assert_eq!(response["actionCount"], 1);
+        assert_eq!(response["results"][0]["stored"], true);
+        let stored = storage
+            .lock()
+            .unwrap()
+            .plugin_kv()
+            .get("plugin.js", "lastExternalPayload")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&stored).unwrap(),
+            serde_json::json!({"source": "ws"})
+        );
+
+        fs::remove_dir_all(bundle_root).unwrap();
     }
 
     #[tokio::test]
@@ -1893,10 +2114,15 @@ mod tests {
             SafetyLimits::conservative(),
             output_sink.clone(),
         ));
+        let discovery_controller: Arc<dyn DeviceDiscoveryController> =
+            Arc::new(TauriBleDiscoveryController::unsupported());
+        let output_host: Arc<dyn DeviceOutputController> = output_controller.clone();
         output_controller.attach_device(DeviceId::new("stale-v3"));
         output_controller.attach_device(DeviceId::new("kept-v3"));
         let runtime = RuntimeState {
+            discovery_controller,
             output_controller,
+            output_host,
             output_sink,
             events: RuntimeEventLog::default(),
             preview_sequences: Arc::new(Mutex::new(CoyoteV3SequenceAllocator::default())),

@@ -69,6 +69,9 @@ restart it to switch modes.
 Plugin registry mutations are persisted in SQLite and synchronized into the
 Core-owned sandboxed plugin runtime. Plugins still cannot access Bluetooth
 directly; enabled plugins are loaded behind the Plugin API boundary.
+External clients can also invoke enabled plugin hooks through the same bridge;
+any host actions returned by the plugin are executed only through the Plugin API
+and still require the plugin manifest capabilities.
 
 Clients granted `events.subscribe` receive pushed WebSocket event envelopes for
 runtime events. Polling through `runtime.events` remains available for clients
@@ -377,6 +380,45 @@ Example result:
       "runtime": "wasm",
       "entry": "dist/plugin.wasm",
       "bundleRoot": "/Users/me/ArcFlow/plugins/dev.arcflow.example"
+    }
+  ]
+}
+```
+
+### `plugin.invokeHook`
+
+Required capability: `plugin.manage`
+
+Invokes one hook on an enabled WASM/JavaScript plugin. The external client
+provides the hook payload, but any returned host actions are executed through
+the Rust-owned Plugin API, so plugin manifest capabilities still apply.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "method": "plugin.invokeHook",
+  "params": {
+    "pluginId": "dev.arcflow.example",
+    "hook": "external.connected",
+    "payload": {
+      "clientName": "OBS ArcFlow Bridge"
+    }
+  }
+}
+```
+
+Example result:
+
+```json
+{
+  "pluginId": "dev.arcflow.example",
+  "hook": "external.connected",
+  "actionCount": 1,
+  "results": [
+    {
+      "key": "lastExternalPayload",
+      "stored": true
     }
   ]
 }
