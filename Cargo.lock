@@ -135,6 +135,7 @@ dependencies = [
  "arcflow-script",
  "arcflow-storage",
  "arcflow-tauri-platform",
+ "async-trait",
  "serde",
  "serde_json",
  "tauri",

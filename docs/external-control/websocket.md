@@ -117,6 +117,26 @@ Required capability: `device.read`
 }
 ```
 
+### `device.connect`
+
+Required capability: `wave.control`
+
+Connects a discovered BLE device through the Tauri platform provider, reads
+battery when available, refreshes the Rust device scan, and synchronizes the
+Coyote V3 output-device set. The response has the same shape as `scan_devices`
+in the Tauri IPC surface.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "device.connect",
+  "params": {
+    "deviceId": "coyote-v3"
+  }
+}
+```
+
 ### `wave.stop`
 
 Required capability: `wave.control`
@@ -124,7 +144,7 @@ Required capability: `wave.control`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 2,
+  "id": 3,
   "method": "wave.stop",
   "params": {
     "deviceId": "coyote-v3"
@@ -141,7 +161,7 @@ Returns whether the Rust-owned preview playback session is running.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 3,
+  "id": 4,
   "method": "wave.previewStatus"
 }
 ```
@@ -157,7 +177,7 @@ preview playback.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 4,
+  "id": 5,
   "method": "wave.startPreview",
   "params": {
     "deviceId": "coyote-v3",
@@ -176,7 +196,7 @@ Stops the preview session and sends a stop-output command through Rust Core.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 5,
+  "id": 6,
   "method": "wave.stopPreview"
 }
 ```
@@ -190,7 +210,7 @@ Marks a device as eligible for wave output writes.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 6,
+  "id": 7,
   "method": "device.activateOutput",
   "params": {
     "deviceId": "coyote-v3"
@@ -209,7 +229,7 @@ Removes a device from wave output writes.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 7,
+  "id": 8,
   "method": "device.deactivateOutput",
   "params": {
     "deviceId": "coyote-v3"
@@ -229,7 +249,7 @@ four points or `null`/omitted to disable that channel.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 8,
+  "id": 9,
   "method": "wave.submitWindow",
   "params": {
     "deviceId": "coyote-v3",
@@ -585,6 +605,7 @@ socket.addEventListener("message", async function onHello(event) {
   const status = await request("device.status", { deviceId: "coyote-v3" });
   console.log("device", status);
 
+  await request("device.connect", { deviceId: "coyote-v3" });
   await request("device.activateOutput", { deviceId: "coyote-v3" });
   await request("wave.startPreview", {
     deviceId: "coyote-v3",

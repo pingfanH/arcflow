@@ -96,6 +96,7 @@ struct PluginRuntimeState {
 const RUNTIME_STATUS_METHOD: &str = "runtime.status";
 const RUNTIME_EVENTS_METHOD: &str = "runtime.events";
 const RUNTIME_PLUGINS_METHOD: &str = "runtime.plugins";
+const DEVICE_CONNECT_METHOD: &str = "device.connect";
 const PLUGIN_INVOKE_HOOK_METHOD: &str = "plugin.invokeHook";
 const WAVE_PREVIEW_STATUS_METHOD: &str = "wave.previewStatus";
 const WAVE_PREVIEW_START_METHOD: &str = "wave.startPreview";
@@ -265,6 +266,12 @@ struct StartPreviewPlaybackParams {
     device_id: String,
     channel_a_strength: u8,
     channel_b_strength: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceParams {
+    device_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -580,32 +587,7 @@ async fn connect_device(
     state: tauri::State<'_, CoreState>,
     runtime_state: tauri::State<'_, RuntimeState>,
 ) -> Result<DeviceScanResponse, String> {
-    let device_id = DeviceId::new(device_id);
-    let connection = runtime_state
-        .ble_platform_provider
-        .connect_device(device_id.clone())
-        .await
-        .map_err(|error| error.to_string())?;
-
-    runtime_state.events.push(
-        "device.connected",
-        match connection.battery_percent {
-            Some(percent) => format!(
-                "device `{}` connected with {percent}% battery",
-                connection.device_id.as_str()
-            ),
-            None => format!("device `{}` connected", connection.device_id.as_str()),
-        },
-    );
-
-    let scan = state
-        .core
-        .scan_devices()
-        .await
-        .map_err(|error| error.to_string())?;
-    sync_active_coyote_v3_output_devices(&runtime_state, &scan);
-
-    Ok(device_scan_response(scan))
+    connect_device_and_scan(&state.core, &runtime_state, DeviceId::new(device_id)).await
 }
 
 #[tauri::command]
@@ -1039,6 +1021,17 @@ fn external_request_handler(
                 };
             }
 
+            if request.method == DEVICE_CONNECT_METHOD {
+                let response =
+                    execute_device_connect_external_request(&session, &request, &core, &runtime)
+                        .await;
+
+                return match response {
+                    Ok(result) => JsonRpcResponse::ok(id, result),
+                    Err(error) => JsonRpcResponse::error(id, error),
+                };
+            }
+
             if request.method == RUNTIME_STATUS_METHOD {
                 let response =
                     execute_runtime_status_external_request(&session, &runtime, &plugin_runtime)
@@ -1098,6 +1091,20 @@ fn is_preview_playback_external_request(request: &JsonRpcRequest) -> bool {
         request.method.as_str(),
         WAVE_PREVIEW_STATUS_METHOD | WAVE_PREVIEW_START_METHOD | WAVE_PREVIEW_STOP_METHOD
     )
+}
+
+async fn execute_device_connect_external_request(
+    session: &ClientSession,
+    request: &JsonRpcRequest,
+    core: &ArcFlowCore,
+    runtime: &RuntimeState,
+) -> Result<serde_json::Value, RpcError> {
+    authorize_external_capability(session, DEVICE_CONNECT_METHOD, Capability::WaveControl)?;
+    let params: DeviceParams = read_external_params(request)?;
+    connect_device_and_scan(core, runtime, DeviceId::new(params.device_id))
+        .await
+        .and_then(|response| serde_json::to_value(response).map_err(|error| error.to_string()))
+        .map_err(|error| RpcError::new(-32000, error))
 }
 
 fn execute_preview_playback_external_request(
@@ -1438,6 +1445,37 @@ fn runtime_status_from_state(runtime: &RuntimeState, loaded_plugin_count: usize)
         ble_output_failed: stats.failed,
         loaded_plugin_count,
     }
+}
+
+async fn connect_device_and_scan(
+    core: &ArcFlowCore,
+    runtime: &RuntimeState,
+    device_id: DeviceId,
+) -> Result<DeviceScanResponse, String> {
+    let connection = runtime
+        .ble_platform_provider
+        .connect_device(device_id)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    runtime.events.push(
+        "device.connected",
+        match connection.battery_percent {
+            Some(percent) => format!(
+                "device `{}` connected with {percent}% battery",
+                connection.device_id.as_str()
+            ),
+            None => format!("device `{}` connected", connection.device_id.as_str()),
+        },
+    );
+
+    let scan = core
+        .scan_devices()
+        .await
+        .map_err(|error| error.to_string())?;
+    sync_active_coyote_v3_output_devices(runtime, &scan);
+
+    Ok(device_scan_response(scan))
 }
 
 fn sync_active_coyote_v3_output_devices(runtime: &RuntimeState, scan: &DeviceScanResult) {
@@ -1834,10 +1872,13 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
+    use arcflow_core::NoopScriptRunner;
     use arcflow_external_control::{ClientHello, PROTOCOL_VERSION};
     use arcflow_plugin_runtime::{PluginManifest, PluginRegistry};
     use arcflow_tauri_platform::{
-        UnsupportedTauriBlePlatformProvider, UnsupportedTauriBleTransportProvider,
+        TauriBleConnectionState, TauriBleDiscoveryState, TauriBleSubscriptionRequest,
+        TauriBleWriteRequest, UnsupportedTauriBlePlatformProvider,
+        UnsupportedTauriBleTransportProvider,
     };
     use tokio::sync::Mutex as AsyncMutex;
 
@@ -1876,21 +1917,32 @@ mod tests {
     }
 
     fn runtime_state_with_core() -> (RuntimeState, ArcFlowCore) {
-        let output_sink = TauriBleOutputSink::spawn(Arc::new(UnsupportedTauriBleTransportProvider));
+        runtime_state_with_platform_provider(Arc::new(UnsupportedTauriBlePlatformProvider))
+    }
+
+    fn runtime_state_with_platform_provider(
+        platform_provider: Arc<dyn TauriBlePlatformProvider>,
+    ) -> (RuntimeState, ArcFlowCore) {
+        let discovery_provider: Arc<dyn TauriBleDiscoveryProvider> = platform_provider.clone();
+        let transport_provider: Arc<dyn TauriBleTransportProvider> = platform_provider.clone();
+        let discovery_controller: Arc<dyn DeviceDiscoveryController> = Arc::new(
+            TauriBleDiscoveryController::with_provider(discovery_provider),
+        );
+        let output_sink = TauriBleOutputSink::spawn(transport_provider);
         let output_controller = Arc::new(CoyoteV3OutputController::new(
             SafetyLimits::conservative(),
             output_sink.clone(),
         ));
-        let discovery_controller: Arc<dyn DeviceDiscoveryController> =
-            Arc::new(TauriBleDiscoveryController::unsupported());
         let core_output_controller: Arc<dyn DeviceOutputController> = output_controller.clone();
-        let core = ArcFlowCore::with_output_controller(
+        let core = ArcFlowCore::with_controllers(
             SafetyLimits::conservative(),
+            Arc::clone(&discovery_controller),
             Arc::clone(&core_output_controller),
+            Arc::new(NoopScriptRunner),
         );
         let runtime = RuntimeState {
             discovery_controller,
-            ble_platform_provider: Arc::new(UnsupportedTauriBlePlatformProvider),
+            ble_platform_provider: platform_provider,
             output_controller,
             output_host: core_output_controller,
             output_sink,
@@ -1899,6 +1951,93 @@ mod tests {
         };
 
         (runtime, core)
+    }
+
+    #[derive(Debug)]
+    struct ConnectingBleProvider {
+        connected: Mutex<Vec<DeviceId>>,
+        battery_percent: Option<u8>,
+    }
+
+    impl ConnectingBleProvider {
+        fn new(battery_percent: Option<u8>) -> Self {
+            Self {
+                connected: Mutex::new(Vec::new()),
+                battery_percent,
+            }
+        }
+
+        fn connected_devices(&self) -> Vec<DeviceId> {
+            self.connected
+                .lock()
+                .expect("connected BLE test provider mutex poisoned")
+                .clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TauriBleDiscoveryProvider for ConnectingBleProvider {
+        async fn scan_state(&self) -> Result<TauriBleDiscoveryState, arcflow_core::CoreError> {
+            let device_id = DeviceId::new("coyote-v3");
+            let connected = self
+                .connected
+                .lock()
+                .expect("connected BLE test provider mutex poisoned")
+                .contains(&device_id);
+
+            Ok(TauriBleDiscoveryState::Ready {
+                advertisements: vec![arcflow_core::BleAdvertisement::new(
+                    device_id,
+                    Some("Coyote V3".to_owned()),
+                    Some(-40),
+                    vec![arcflow_core::COYOTE_V3_SERVICE_UUID],
+                )
+                .with_connected(connected)
+                .with_battery_percent(connected.then_some(self.battery_percent).flatten())],
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TauriBleTransportProvider for ConnectingBleProvider {
+        async fn write(
+            &self,
+            _request: TauriBleWriteRequest,
+        ) -> Result<(), arcflow_core::CoreError> {
+            Ok(())
+        }
+
+        async fn subscribe(
+            &self,
+            _request: TauriBleSubscriptionRequest,
+        ) -> Result<(), arcflow_core::CoreError> {
+            Ok(())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl TauriBlePlatformProvider for ConnectingBleProvider {
+        async fn connect_device(
+            &self,
+            device_id: DeviceId,
+        ) -> Result<TauriBleConnectionState, arcflow_core::CoreError> {
+            self.connected
+                .lock()
+                .expect("connected BLE test provider mutex poisoned")
+                .push(device_id.clone());
+
+            Ok(TauriBleConnectionState::new(
+                device_id,
+                self.battery_percent,
+            ))
+        }
+
+        async fn read_battery_percent(
+            &self,
+            _device_id: &DeviceId,
+        ) -> Result<Option<u8>, arcflow_core::CoreError> {
+            Ok(self.battery_percent)
+        }
     }
 
     fn test_bundle_root(name: &str) -> PathBuf {
@@ -2118,6 +2257,55 @@ mod tests {
 
         assert_eq!(response["events"][0]["kind"], "runtime.ready");
         assert_eq!(response["events"][0]["message"], "runtime ready");
+    }
+
+    #[tokio::test]
+    async fn device_connect_external_request_requires_wave_control() {
+        let (runtime, core) = runtime_state_with_core();
+        let session = session_with(vec![Capability::DeviceRead]);
+        let request = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(40),
+            DEVICE_CONNECT_METHOD,
+            Some(serde_json::json!({ "deviceId": "coyote-v3" })),
+        );
+
+        let error = execute_device_connect_external_request(&session, &request, &core, &runtime)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, -32000);
+        assert!(error.message.contains("wave.control"));
+        assert!(error.message.contains(DEVICE_CONNECT_METHOD));
+    }
+
+    #[tokio::test]
+    async fn device_connect_external_request_connects_and_returns_scan() {
+        let provider = Arc::new(ConnectingBleProvider::new(Some(88)));
+        let (runtime, core) = runtime_state_with_platform_provider(provider.clone());
+        let session = session_with(vec![Capability::WaveControl]);
+        let request = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(41),
+            DEVICE_CONNECT_METHOD,
+            Some(serde_json::json!({ "deviceId": "coyote-v3" })),
+        );
+
+        let response = execute_device_connect_external_request(&session, &request, &core, &runtime)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            provider.connected_devices(),
+            vec![DeviceId::new("coyote-v3")]
+        );
+        assert_eq!(response["adapterStatus"], "ready");
+        assert_eq!(response["devices"][0]["id"], "coyote-v3");
+        assert_eq!(response["devices"][0]["connected"], true);
+        assert_eq!(response["devices"][0]["batteryPercent"], 88);
+        assert_eq!(
+            runtime.output_controller.active_devices(),
+            vec![DeviceId::new("coyote-v3")]
+        );
+        assert_eq!(runtime.events.list()[0].kind, "device.connected");
     }
 
     #[tokio::test]
