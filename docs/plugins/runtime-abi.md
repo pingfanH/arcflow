@@ -59,6 +59,8 @@ Current host actions:
 | Method | Required capability | Purpose |
 | --- | --- | --- |
 | `device.status` | `device.read` | Read one device's status through Core-owned device discovery. |
+| `device.activateOutput` | `wave.control` | Mark a device as active for Core-owned output writes. |
+| `device.deactivateOutput` | `wave.control` | Remove a device from active Core-owned output writes. |
 | `storage.private.put` | `storage.private` | Store plugin-private JSON. |
 | `storage.private.get` | `storage.private` | Read plugin-private JSON. |
 | `storage.private.delete` | `storage.private` | Delete one plugin-private key. |

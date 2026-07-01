@@ -82,6 +82,8 @@ impl PluginApi {
             "storage.private.delete" => self.storage_delete(manifest, action.params),
             "storage.private.keys" => self.storage_keys(manifest),
             "device.status" => self.device_status(manifest, action.params).await,
+            "device.activateOutput" => self.activate_output_device(manifest, action.params),
+            "device.deactivateOutput" => self.deactivate_output_device(manifest, action.params),
             "wave.stop" => self.wave_stop(manifest, action.params),
             method => Err(PluginApiError::UnknownMethod(method.to_owned())),
         }
@@ -201,13 +203,54 @@ impl PluginApi {
         }
     }
 
+    fn activate_output_device(
+        &self,
+        manifest: &PluginManifest,
+        params: Value,
+    ) -> Result<Value, PluginApiError> {
+        ensure_capability(manifest, Capability::WaveControl)?;
+        let params: DeviceParams = read_params("device.activateOutput", params)?;
+        let output_controller = self.output_controller("device.activateOutput")?;
+        let device_id = DeviceId::new(params.device_id);
+
+        output_controller
+            .attach_output_device(device_id.clone())
+            .map_err(|error| PluginApiError::Host(error.to_string()))?;
+
+        Ok(json!({
+            "accepted": true,
+            "command": "device.activateOutput",
+            "deviceId": device_id.as_str(),
+            "activeOutputDevices": device_ids_payload(output_controller.active_output_devices()),
+        }))
+    }
+
+    fn deactivate_output_device(
+        &self,
+        manifest: &PluginManifest,
+        params: Value,
+    ) -> Result<Value, PluginApiError> {
+        ensure_capability(manifest, Capability::WaveControl)?;
+        let params: DeviceParams = read_params("device.deactivateOutput", params)?;
+        let output_controller = self.output_controller("device.deactivateOutput")?;
+        let device_id = DeviceId::new(params.device_id);
+
+        output_controller
+            .detach_output_device(&device_id)
+            .map_err(|error| PluginApiError::Host(error.to_string()))?;
+
+        Ok(json!({
+            "accepted": true,
+            "command": "device.deactivateOutput",
+            "deviceId": device_id.as_str(),
+            "activeOutputDevices": device_ids_payload(output_controller.active_output_devices()),
+        }))
+    }
+
     fn wave_stop(&self, manifest: &PluginManifest, params: Value) -> Result<Value, PluginApiError> {
         ensure_capability(manifest, Capability::WaveControl)?;
         let params: DeviceParams = read_params("wave.stop", params)?;
-        let output_controller = self
-            .output_controller
-            .as_ref()
-            .ok_or_else(|| PluginApiError::HostUnavailable("wave.stop".to_owned()))?;
+        let output_controller = self.output_controller("wave.stop")?;
         let device_id = DeviceId::new(params.device_id);
         let result = output_controller
             .stop_all_output()
@@ -223,6 +266,15 @@ impl PluginApi {
             "deviceId": device_id.as_str(),
             "stopped": stopped,
         }))
+    }
+
+    fn output_controller(
+        &self,
+        method: &'static str,
+    ) -> Result<&Arc<dyn DeviceOutputController>, PluginApiError> {
+        self.output_controller
+            .as_ref()
+            .ok_or_else(|| PluginApiError::HostUnavailable(method.to_owned()))
     }
 
     fn storage(&self) -> Result<MutexGuard<'_, Storage>, PluginApiError> {
@@ -335,6 +387,13 @@ fn device_status_payload(device: &DeviceStatus, adapter_status: BleAdapterStatus
     })
 }
 
+fn device_ids_payload(device_ids: Vec<DeviceId>) -> Vec<String> {
+    device_ids
+        .into_iter()
+        .map(|device_id| device_id.as_str().to_owned())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -371,6 +430,7 @@ mod tests {
 
     #[derive(Debug)]
     struct FakeOutputController {
+        active_devices: Mutex<Vec<DeviceId>>,
         stopped_devices: Vec<DeviceId>,
         stop_count: Mutex<usize>,
     }
@@ -378,6 +438,7 @@ mod tests {
     impl FakeOutputController {
         fn new(stopped_devices: Vec<DeviceId>) -> Self {
             Self {
+                active_devices: Mutex::new(Vec::new()),
                 stopped_devices,
                 stop_count: Mutex::new(0),
             }
@@ -385,6 +446,26 @@ mod tests {
     }
 
     impl DeviceOutputController for FakeOutputController {
+        fn attach_output_device(&self, device_id: DeviceId) -> Result<(), crate::CoreError> {
+            let mut active_devices = self.active_devices.lock().unwrap();
+            if !active_devices.contains(&device_id) {
+                active_devices.push(device_id);
+            }
+            Ok(())
+        }
+
+        fn detach_output_device(&self, device_id: &DeviceId) -> Result<(), crate::CoreError> {
+            self.active_devices
+                .lock()
+                .unwrap()
+                .retain(|active_device| active_device != device_id);
+            Ok(())
+        }
+
+        fn active_output_devices(&self) -> Vec<DeviceId> {
+            self.active_devices.lock().unwrap().clone()
+        }
+
         fn submit_coyote_v3_window(
             &self,
             _request: crate::CoyoteV3OutputRequest,
@@ -661,6 +742,116 @@ mod tests {
         assert_eq!(
             error,
             PluginApiError::HostUnavailable("device.status".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn activates_output_device_through_output_controller() {
+        let storage = in_memory_storage();
+        let controller = Arc::new(FakeOutputController::new(Vec::new()));
+        let output_controller: Arc<dyn DeviceOutputController> = controller.clone();
+        let api = PluginApi::with_output_controller(storage, output_controller);
+        let manifest = manifest_with(vec![Capability::WaveControl]);
+
+        let result = api
+            .handle_action(
+                &manifest,
+                PluginAction::new("device.activateOutput", json!({ "deviceId": "coyote-v3" })),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            json!({
+                "accepted": true,
+                "command": "device.activateOutput",
+                "deviceId": "coyote-v3",
+                "activeOutputDevices": ["coyote-v3"],
+            })
+        );
+        assert_eq!(
+            controller.active_output_devices(),
+            vec![DeviceId::new("coyote-v3")]
+        );
+    }
+
+    #[tokio::test]
+    async fn deactivates_output_device_through_output_controller() {
+        let storage = in_memory_storage();
+        let controller = Arc::new(FakeOutputController::new(Vec::new()));
+        controller
+            .attach_output_device(DeviceId::new("coyote-v3"))
+            .unwrap();
+        let output_controller: Arc<dyn DeviceOutputController> = controller.clone();
+        let api = PluginApi::with_output_controller(storage, output_controller);
+        let manifest = manifest_with(vec![Capability::WaveControl]);
+
+        let result = api
+            .handle_action(
+                &manifest,
+                PluginAction::new(
+                    "device.deactivateOutput",
+                    json!({ "deviceId": "coyote-v3" }),
+                ),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            json!({
+                "accepted": true,
+                "command": "device.deactivateOutput",
+                "deviceId": "coyote-v3",
+                "activeOutputDevices": [],
+            })
+        );
+        assert!(controller.active_output_devices().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejects_output_activation_without_capability() {
+        let storage = in_memory_storage();
+        let controller = Arc::new(FakeOutputController::new(Vec::new()));
+        let output_controller: Arc<dyn DeviceOutputController> = controller;
+        let api = PluginApi::with_output_controller(storage, output_controller);
+        let manifest = manifest_with(vec![Capability::DeviceRead]);
+
+        let error = api
+            .handle_action(
+                &manifest,
+                PluginAction::new("device.activateOutput", json!({ "deviceId": "coyote-v3" })),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            PluginApiError::CapabilityDenied {
+                plugin_id: "com.example.plugin".to_owned(),
+                capability: Capability::WaveControl,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_output_activation_without_output_controller() {
+        let storage = in_memory_storage();
+        let api = PluginApi::new(storage);
+        let manifest = manifest_with(vec![Capability::WaveControl]);
+
+        let error = api
+            .handle_action(
+                &manifest,
+                PluginAction::new("device.activateOutput", json!({ "deviceId": "coyote-v3" })),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            PluginApiError::HostUnavailable("device.activateOutput".to_owned())
         );
     }
 
