@@ -24,6 +24,7 @@ pub mod script_execution;
 pub mod script_persistence;
 pub mod script_runner;
 pub mod session;
+pub(crate) mod wave_submit;
 
 pub use ble::{
     bluetooth_base_uuid, BleAdvertisement, BleCharacteristic, BleDeviceDiscoveryController,

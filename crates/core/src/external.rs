@@ -2,15 +2,14 @@
 
 use arcflow_external_control::{ClientSession, JsonRpcRequest};
 use arcflow_plugin_runtime::Capability;
-use arcflow_protocol::coyote::v3::{StrengthMode, StrengthModes};
 use arcflow_storage::Storage;
-use arcflow_wave::{ChannelOutput, ChannelWindow, CoyoteV3Window, WavePoint};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::wave_submit::coyote_v3_output_request_from_value;
 use crate::{
-    CoreCommand, CoreError, DeviceId, PluginBundle, PluginRegistryPersistence,
-    ScriptDocumentPersistence,
+    CoreCommand, CoreError, CoyoteV3OutputRequest, DeviceId, PluginBundle,
+    PluginRegistryPersistence, ScriptDocumentPersistence,
 };
 
 const DEVICE_ACTIVATE_OUTPUT_METHOD: &str = "device.activateOutput";
@@ -85,8 +84,10 @@ pub fn core_command_from_external_request(
             })
         }
         "wave.submitWindow" => {
-            let params: SubmitWindowParams = read_params(request)?;
-            submit_window_command(params)
+            let params = required_params(request)?;
+            let request = coyote_v3_output_request_from_value("wave.submitWindow", params)
+                .map_err(|error| CoreError::InvalidExternalRequest(error.to_string()))?;
+            Ok(submit_window_command(request))
         }
         "wave.stop" => {
             let params: DeviceParams = read_params(request)?;
@@ -276,49 +277,6 @@ struct ScriptDeleteParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SubmitWindowParams {
-    device_id: String,
-    sequence: u8,
-    #[serde(default)]
-    strength_modes: StrengthModesParams,
-    #[serde(default)]
-    a_strength: u8,
-    #[serde(default)]
-    b_strength: u8,
-    #[serde(default)]
-    channel_a: Option<[WavePointParams; 4]>,
-    #[serde(default)]
-    channel_b: Option<[WavePointParams; 4]>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StrengthModesParams {
-    #[serde(default)]
-    a: StrengthModeParam,
-    #[serde(default)]
-    b: StrengthModeParam,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-enum StrengthModeParam {
-    #[default]
-    Unchanged,
-    Increase,
-    Decrease,
-    Absolute,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WavePointParams {
-    period_ms: u16,
-    strength: u8,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct PluginInstallManifestParams {
     manifest_json: String,
 }
@@ -342,46 +300,14 @@ struct PluginDeleteParams {
     plugin_id: String,
 }
 
-fn submit_window_command(params: SubmitWindowParams) -> Result<CoreCommand, CoreError> {
-    Ok(CoreCommand::SubmitCoyoteV3Window {
-        device_id: DeviceId::new(params.device_id),
-        window: CoyoteV3Window::new(
-            channel_output(params.channel_a)?,
-            channel_output(params.channel_b)?,
-        ),
-        sequence: params.sequence,
-        strength_modes: StrengthModes::new(
-            strength_mode(params.strength_modes.a),
-            strength_mode(params.strength_modes.b),
-        ),
-        a_strength: params.a_strength,
-        b_strength: params.b_strength,
-    })
-}
-
-fn channel_output(points: Option<[WavePointParams; 4]>) -> Result<ChannelOutput, CoreError> {
-    let Some(points) = points else {
-        return Ok(ChannelOutput::Disabled);
-    };
-
-    Ok(ChannelOutput::Window(ChannelWindow::new([
-        wave_point(points[0])?,
-        wave_point(points[1])?,
-        wave_point(points[2])?,
-        wave_point(points[3])?,
-    ])))
-}
-
-fn wave_point(point: WavePointParams) -> Result<WavePoint, CoreError> {
-    Ok(WavePoint::new(point.period_ms, point.strength)?)
-}
-
-fn strength_mode(mode: StrengthModeParam) -> StrengthMode {
-    match mode {
-        StrengthModeParam::Unchanged => StrengthMode::Unchanged,
-        StrengthModeParam::Increase => StrengthMode::Increase,
-        StrengthModeParam::Decrease => StrengthMode::Decrease,
-        StrengthModeParam::Absolute => StrengthMode::Absolute,
+fn submit_window_command(request: CoyoteV3OutputRequest) -> CoreCommand {
+    CoreCommand::SubmitCoyoteV3Window {
+        device_id: request.device_id,
+        window: request.window,
+        sequence: request.sequence,
+        strength_modes: request.strength_modes,
+        a_strength: request.a_strength,
+        b_strength: request.b_strength,
     }
 }
 
@@ -389,15 +315,19 @@ fn read_params<T>(request: &JsonRpcRequest) -> Result<T, CoreError>
 where
     T: for<'de> Deserialize<'de>,
 {
-    let params = request.params.clone().ok_or_else(|| {
-        CoreError::InvalidExternalRequest(format!("missing params for `{}`", request.method))
-    })?;
+    let params = required_params(request)?;
 
     serde_json::from_value(params).map_err(|error| {
         CoreError::InvalidExternalRequest(format!(
             "invalid params for `{}`: {error}",
             request.method
         ))
+    })
+}
+
+fn required_params(request: &JsonRpcRequest) -> Result<Value, CoreError> {
+    request.params.clone().ok_or_else(|| {
+        CoreError::InvalidExternalRequest(format!("missing params for `{}`", request.method))
     })
 }
 
@@ -411,7 +341,9 @@ mod tests {
 
     use super::*;
     use arcflow_external_control::{ClientHello, GatewayPolicy, RequestId, PROTOCOL_VERSION};
+    use arcflow_protocol::coyote::v3::{StrengthMode, StrengthModes};
     use arcflow_storage::Storage;
+    use arcflow_wave::{ChannelOutput, ChannelWindow, CoyoteV3Window, WavePoint};
     use serde_json::json;
 
     #[test]

@@ -4,15 +4,13 @@ use core::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use arcflow_plugin_runtime::{Capability, PluginAction, PluginManifest, PluginOutput};
-use arcflow_protocol::coyote::v3::{StrengthMode, StrengthModes};
 use arcflow_storage::{Storage, StorageError};
-use arcflow_wave::{ChannelOutput, ChannelWindow, CoyoteV3Window, WavePoint};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::wave_submit::coyote_v3_output_request_from_value;
 use crate::{
-    BleAdapterStatus, CoyoteV3OutputRequest, DeviceDiscoveryController, DeviceId,
-    DeviceOutputController, DeviceStatus,
+    BleAdapterStatus, DeviceDiscoveryController, DeviceId, DeviceOutputController, DeviceStatus,
 };
 
 /// Core-owned plugin host API.
@@ -257,23 +255,9 @@ impl PluginApi {
         params: Value,
     ) -> Result<Value, PluginApiError> {
         ensure_capability(manifest, Capability::WaveControl)?;
-        let params: SubmitWindowParams = read_params("wave.submitWindow", params)?;
+        let request = coyote_v3_output_request_from_value("wave.submitWindow", params)
+            .map_err(|error| PluginApiError::InvalidParams(error.to_string()))?;
         let output_controller = self.output_controller("wave.submitWindow")?;
-        let device_id = DeviceId::new(params.device_id);
-        let request = CoyoteV3OutputRequest::new(
-            device_id,
-            CoyoteV3Window::new(
-                channel_output(params.channel_a)?,
-                channel_output(params.channel_b)?,
-            ),
-            params.sequence,
-            StrengthModes::new(
-                strength_mode(params.strength_modes.a),
-                strength_mode(params.strength_modes.b),
-            ),
-            params.a_strength,
-            params.b_strength,
-        );
         let result = output_controller
             .submit_coyote_v3_window(request)
             .map_err(|error| PluginApiError::Host(error.to_string()))?;
@@ -393,49 +377,6 @@ struct DeviceParams {
     device_id: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SubmitWindowParams {
-    device_id: String,
-    sequence: u8,
-    #[serde(default)]
-    strength_modes: StrengthModesParams,
-    #[serde(default)]
-    a_strength: u8,
-    #[serde(default)]
-    b_strength: u8,
-    #[serde(default)]
-    channel_a: Option<[WavePointParams; 4]>,
-    #[serde(default)]
-    channel_b: Option<[WavePointParams; 4]>,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StrengthModesParams {
-    #[serde(default)]
-    a: StrengthModeParam,
-    #[serde(default)]
-    b: StrengthModeParam,
-}
-
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
-enum StrengthModeParam {
-    #[default]
-    Unchanged,
-    Increase,
-    Decrease,
-    Absolute,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WavePointParams {
-    period_ms: u16,
-    strength: u8,
-}
-
 fn ensure_capability(
     manifest: &PluginManifest,
     capability: Capability,
@@ -475,43 +416,19 @@ fn device_ids_payload(device_ids: Vec<DeviceId>) -> Vec<String> {
         .collect()
 }
 
-fn channel_output(points: Option<[WavePointParams; 4]>) -> Result<ChannelOutput, PluginApiError> {
-    let Some(points) = points else {
-        return Ok(ChannelOutput::Disabled);
-    };
-
-    Ok(ChannelOutput::Window(ChannelWindow::new([
-        wave_point(points[0])?,
-        wave_point(points[1])?,
-        wave_point(points[2])?,
-        wave_point(points[3])?,
-    ])))
-}
-
-fn wave_point(point: WavePointParams) -> Result<WavePoint, PluginApiError> {
-    WavePoint::new(point.period_ms, point.strength)
-        .map_err(|error| PluginApiError::InvalidParams(error.to_string()))
-}
-
-fn strength_mode(mode: StrengthModeParam) -> StrengthMode {
-    match mode {
-        StrengthModeParam::Unchanged => StrengthMode::Unchanged,
-        StrengthModeParam::Increase => StrengthMode::Increase,
-        StrengthModeParam::Decrease => StrengthMode::Decrease,
-        StrengthModeParam::Absolute => StrengthMode::Absolute,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
     use arcflow_plugin_runtime::{PluginAction, RuntimeKind};
+    use arcflow_protocol::coyote::v3::{StrengthMode, StrengthModes};
     use arcflow_storage::Storage;
+    use arcflow_wave::{ChannelOutput, ChannelWindow, CoyoteV3Window, WavePoint};
     use async_trait::async_trait;
     use serde_json::json;
 
     use super::*;
+    use crate::CoyoteV3OutputRequest;
 
     #[derive(Debug)]
     struct FakeDiscoveryController {
