@@ -35,6 +35,12 @@ where
         &self.registry
     }
 
+    /// Returns the runtime Adapter.
+    #[must_use]
+    pub fn adapter(&self) -> &A {
+        &self.adapter
+    }
+
     /// Installs a plugin manifest as disabled.
     pub fn install(&mut self, manifest: PluginManifest) -> Result<(), PluginHostError> {
         self.registry.install(manifest)?;

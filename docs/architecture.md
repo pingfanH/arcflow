@@ -42,7 +42,8 @@ through Rust Core and capability checks before any device-facing operation.
 - `crates/wave`: safe wave-domain values and Coyote V3 window conversion.
 - `crates/script`: safe script document model and compiler.
 - `crates/plugin-runtime`: WASM/JavaScript plugin manifests, capabilities,
-  sandbox policy, registry, and runtime routing.
+  sandbox policy, registry, runtime routing, and a deterministic recording
+  runtime used until real WASM/JS engines are attached.
 - `crates/storage`: SQLite schema and Rust-owned stores for plugin data,
   installed plugins, and scripts.
 - `crates/external-control`: local WebSocket protocol and gateway.
@@ -61,6 +62,12 @@ Bluetooth implementation, but desktop and mobile use Tauri 2 and Rust.
 Plugins support `wasm` and `javascript` runtimes. They run behind the Plugin API
 and never receive direct Bluetooth access. External software connects through the
 local WebSocket gateway and receives only the capabilities granted during hello.
+
+The current runtime implementation includes a recording adapter for both WASM
+and JavaScript. It validates sandbox admission, records load/invoke/unload
+events, and returns empty plugin output so host wiring can be tested without
+executing untrusted code. Real engines will replace the adapter behind the same
+`RuntimeAdapter` boundary.
 
 Current external routes include device status, wave control, script run,
 script document management, and plugin registry management. See

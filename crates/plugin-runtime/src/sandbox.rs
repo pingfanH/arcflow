@@ -100,6 +100,12 @@ impl<A> SandboxedRuntime<A> {
         Self { adapter, policy }
     }
 
+    /// Constructs a sandboxed runtime with the default ArcFlow policy.
+    #[must_use]
+    pub fn default_policy(adapter: A) -> Self {
+        Self::new(adapter, SandboxPolicy::default())
+    }
+
     /// Returns the wrapped runtime Adapter.
     #[must_use]
     pub fn adapter(&self) -> &A {

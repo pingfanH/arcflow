@@ -9,6 +9,7 @@
 pub mod capability;
 pub mod host;
 pub mod manifest;
+pub mod recording;
 pub mod registry;
 pub mod router;
 pub mod runtime;
@@ -17,6 +18,9 @@ pub mod sandbox;
 pub use capability::Capability;
 pub use host::{PluginHost, PluginHostError};
 pub use manifest::{ManifestError, PluginManifest, RuntimeKind};
+pub use recording::{
+    RecordedPlugin, RecordingRuntimeAdapter, RecordingRuntimeEvent, RecordingRuntimeSnapshot,
+};
 pub use registry::{PluginRecord, PluginRegistry, PluginRegistryError};
 pub use router::RuntimeRouter;
 pub use runtime::{
