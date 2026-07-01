@@ -10,9 +10,9 @@ use arcflow_core::{
     is_script_documents_external_request, ArcFlowCore, CoreScriptActionExecutor,
     CoyoteV3OutputController, DeviceDiscoveryController, DeviceModel, DeviceOutputController,
     DeviceScanResult, DeviceStatus, PluginBundle, PluginRegistryEntry, PluginRegistryPersistence,
-    PluginRuntimeSyncReport, RecordingPluginRuntimeController, SafetyLimits, ScriptDocumentEntry,
-    ScriptDocumentPersistence, ScriptWorkerEvent, ScriptWorkerQueue, StopOutputResult,
-    StorageScriptRunner,
+    PluginRuntimeSyncReport, RecordingPluginRuntimeController, RecordingPluginRuntimeHookInvoker,
+    SafetyLimits, ScriptDocumentEntry, ScriptDocumentPersistence, ScriptWorkerEvent,
+    ScriptWorkerQueue, StopOutputResult, StorageScriptRunner,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
@@ -795,8 +795,10 @@ pub fn run() {
             let storage = Arc::new(Mutex::new(Storage::open(&database_path)?));
             let safety_limits = SafetyLimits::conservative();
             let events = RuntimeEventLog::default();
+            let plugin_runtime_controller =
+                Arc::new(AsyncMutex::new(RecordingPluginRuntimeController::new()));
             let plugin_runtime = PluginRuntimeState {
-                controller: Arc::new(AsyncMutex::new(RecordingPluginRuntimeController::new())),
+                controller: Arc::clone(&plugin_runtime_controller),
                 events: events.clone(),
             };
             let (script_event_sender, script_events) = mpsc::unbounded_channel();
@@ -811,9 +813,13 @@ pub fn run() {
                 output_sink.clone(),
             ));
             let core_output_controller: Arc<dyn DeviceOutputController> = output_controller.clone();
-            let script_actions = CoreScriptActionExecutor::new(
+            let plugin_hook_invoker = Arc::new(RecordingPluginRuntimeHookInvoker::new(Arc::clone(
+                &plugin_runtime_controller,
+            )));
+            let script_actions = CoreScriptActionExecutor::with_plugin_hooks(
                 Arc::clone(&discovery_controller),
                 Arc::clone(&core_output_controller),
+                plugin_hook_invoker,
             );
             let script_queue = ScriptWorkerQueue::spawn_with_event_sink(
                 Arc::new(script_actions),

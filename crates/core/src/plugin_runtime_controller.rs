@@ -1,11 +1,17 @@
 //! Plugin runtime lifecycle controller.
 
 use core::fmt;
+use std::sync::Arc;
 
 use arcflow_plugin_runtime::{
-    PluginHost, PluginHostError, PluginRegistry, RecordedPlugin, RecordingRuntimeAdapter,
-    RecordingRuntimeSnapshot, RuntimeRouter, SandboxedRuntime,
+    PluginHost, PluginHostError, PluginInvocation, PluginOutput, PluginRegistry, RecordedPlugin,
+    RecordingRuntimeAdapter, RecordingRuntimeSnapshot, RuntimeRouter, SandboxedRuntime,
 };
+use async_trait::async_trait;
+use serde_json::Value;
+use tokio::sync::Mutex as AsyncMutex;
+
+use crate::{CoreError, PluginHookInvoker};
 
 /// Runtime router used by the current recording plugin runtime.
 pub type RecordingPluginRuntimeRouter =
@@ -94,6 +100,19 @@ impl RecordingPluginRuntimeController {
         plugins.sort_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
         plugins
     }
+
+    /// Invokes one hook on an enabled plugin.
+    pub async fn invoke_hook(
+        &self,
+        plugin_id: &str,
+        hook: &str,
+        payload: Value,
+    ) -> Result<PluginOutput, PluginRuntimeControllerError> {
+        Ok(self
+            .host
+            .invoke(plugin_id, PluginInvocation::new(hook, payload))
+            .await?)
+    }
 }
 
 impl Default for RecordingPluginRuntimeController {
@@ -155,6 +174,53 @@ impl From<PluginHostError> for PluginRuntimeControllerError {
     }
 }
 
+/// Script hook invoker backed by the recording plugin runtime controller.
+#[derive(Clone)]
+pub struct RecordingPluginRuntimeHookInvoker {
+    controller: Arc<AsyncMutex<RecordingPluginRuntimeController>>,
+}
+
+impl RecordingPluginRuntimeHookInvoker {
+    /// Constructs a hook invoker over the shared recording runtime controller.
+    #[must_use]
+    pub fn new(controller: Arc<AsyncMutex<RecordingPluginRuntimeController>>) -> Self {
+        Self { controller }
+    }
+}
+
+impl fmt::Debug for RecordingPluginRuntimeHookInvoker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecordingPluginRuntimeHookInvoker")
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl PluginHookInvoker for RecordingPluginRuntimeHookInvoker {
+    async fn invoke_plugin_hook(
+        &self,
+        plugin_id: &str,
+        hook: &str,
+        payload: &Value,
+    ) -> Result<(), CoreError> {
+        let output = self
+            .controller
+            .lock()
+            .await
+            .invoke_hook(plugin_id, hook, payload.clone())
+            .await
+            .map_err(|error| CoreError::Script(error.to_string()))?;
+
+        if output.actions.is_empty() {
+            Ok(())
+        } else {
+            Err(CoreError::Script(format!(
+                "plugin hook `{hook}` for plugin `{plugin_id}` returned host actions, but script hook output handling is not attached"
+            )))
+        }
+    }
+}
+
 fn new_recording_plugin_host() -> RecordingPluginHost {
     PluginHost::new(SandboxedRuntime::default_policy(RuntimeRouter::new(
         RecordingRuntimeAdapter::wasm(),
@@ -165,6 +231,7 @@ fn new_recording_plugin_host() -> RecordingPluginHost {
 #[cfg(test)]
 mod tests {
     use arcflow_plugin_runtime::{Capability, PluginManifest, RuntimeKind};
+    use serde_json::json;
 
     use super::*;
 
@@ -244,5 +311,37 @@ mod tests {
 
         assert_eq!(report.unloaded_plugin_ids, vec!["plugin.wasm"]);
         assert!(controller.loaded_plugins().is_empty());
+    }
+
+    #[tokio::test]
+    async fn invokes_enabled_plugin_hooks() {
+        let mut registry = PluginRegistry::new();
+        registry
+            .install(manifest("plugin.wasm", RuntimeKind::Wasm))
+            .unwrap();
+        registry.enable("plugin.wasm").unwrap();
+        let mut controller = RecordingPluginRuntimeController::new();
+        controller.sync_from_registry(&registry).await.unwrap();
+
+        let output = controller
+            .invoke_hook("plugin.wasm", "afterStop", json!({ "ok": true }))
+            .await
+            .unwrap();
+
+        assert!(output.actions.is_empty());
+        assert_eq!(controller.recording_snapshots().wasm.events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn hook_invoker_rejects_unloaded_plugins() {
+        let controller = Arc::new(AsyncMutex::new(RecordingPluginRuntimeController::new()));
+        let invoker = RecordingPluginRuntimeHookInvoker::new(controller);
+
+        let error = invoker
+            .invoke_plugin_hook("plugin.missing", "afterStop", &json!({}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("not installed"));
     }
 }

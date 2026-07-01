@@ -31,6 +31,7 @@ impl CompiledScriptQueue for NoopCompiledScriptQueue {
 pub struct CoreScriptActionExecutor {
     discovery_controller: Arc<dyn DeviceDiscoveryController>,
     output_controller: Arc<dyn DeviceOutputController>,
+    plugin_hooks: Arc<dyn PluginHookInvoker>,
 }
 
 impl CoreScriptActionExecutor {
@@ -40,9 +41,24 @@ impl CoreScriptActionExecutor {
         discovery_controller: Arc<dyn DeviceDiscoveryController>,
         output_controller: Arc<dyn DeviceOutputController>,
     ) -> Self {
+        Self::with_plugin_hooks(
+            discovery_controller,
+            output_controller,
+            Arc::new(UnattachedPluginHookInvoker),
+        )
+    }
+
+    /// Constructs a Core-backed script action executor with plugin hook support.
+    #[must_use]
+    pub fn with_plugin_hooks(
+        discovery_controller: Arc<dyn DeviceDiscoveryController>,
+        output_controller: Arc<dyn DeviceOutputController>,
+        plugin_hooks: Arc<dyn PluginHookInvoker>,
+    ) -> Self {
         Self {
             discovery_controller,
             output_controller,
+            plugin_hooks,
         }
     }
 }
@@ -67,11 +83,11 @@ impl ScriptActionExecutor for CoreScriptActionExecutor {
         &self,
         plugin_id: &str,
         hook: &str,
-        _payload: &Value,
+        payload: &Value,
     ) -> Result<(), CoreError> {
-        Err(CoreError::Script(format!(
-            "plugin hook `{hook}` for plugin `{plugin_id}` is not attached"
-        )))
+        self.plugin_hooks
+            .invoke_plugin_hook(plugin_id, hook, payload)
+            .await
     }
 }
 
@@ -176,6 +192,36 @@ pub trait ScriptActionExecutor: fmt::Debug + Send + Sync {
         hook: &str,
         payload: &Value,
     ) -> Result<(), CoreError>;
+}
+
+/// Plugin hook invocation surface used by Core script actions.
+#[async_trait]
+pub trait PluginHookInvoker: fmt::Debug + Send + Sync {
+    /// Invokes one hook on a sandboxed plugin.
+    async fn invoke_plugin_hook(
+        &self,
+        plugin_id: &str,
+        hook: &str,
+        payload: &Value,
+    ) -> Result<(), CoreError>;
+}
+
+/// Plugin hook invoker used before a plugin runtime is attached.
+#[derive(Debug, Default)]
+pub struct UnattachedPluginHookInvoker;
+
+#[async_trait]
+impl PluginHookInvoker for UnattachedPluginHookInvoker {
+    async fn invoke_plugin_hook(
+        &self,
+        plugin_id: &str,
+        hook: &str,
+        _payload: &Value,
+    ) -> Result<(), CoreError> {
+        Err(CoreError::Script(format!(
+            "plugin hook `{hook}` for plugin `{plugin_id}` is not attached"
+        )))
+    }
 }
 
 /// Action executor used before real device/plugin actions are attached.

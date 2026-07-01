@@ -84,4 +84,6 @@ Script documents are stored in SQLite, validated by `crates/script`, and run
 through a storage-backed Core runner. The runner compiles the document, enqueues
 the compiled script, and a background worker executes steps through an injected
 Core action executor. This keeps IPC responsive and gives future device/plugin
-actions a replaceable boundary.
+actions a replaceable boundary. Plugin hook script steps invoke enabled plugins
+through the same sandboxed runtime host used by UI and WebSocket plugin
+management.

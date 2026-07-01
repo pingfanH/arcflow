@@ -51,8 +51,8 @@ pub use plugin_registry_persistence::{
 };
 pub use plugin_runtime_controller::{
     PluginRuntimeControllerError, PluginRuntimeSyncReport, RecordingPluginHost,
-    RecordingPluginRuntime, RecordingPluginRuntimeController, RecordingPluginRuntimeRouter,
-    RecordingPluginRuntimeSnapshots,
+    RecordingPluginRuntime, RecordingPluginRuntimeController, RecordingPluginRuntimeHookInvoker,
+    RecordingPluginRuntimeRouter, RecordingPluginRuntimeSnapshots,
 };
 pub use runtime::{
     ArcFlowCore, DeviceDiscoveryController, DeviceOutputController, NoopDeviceDiscoveryController,
@@ -61,8 +61,9 @@ pub use runtime::{
 pub use safety::SafetyLimits;
 pub use script_execution::{
     CompiledScriptQueue, CoreScriptActionExecutor, NoopCompiledScriptQueue,
-    NoopScriptActionExecutor, ScriptActionExecutor, ScriptExecutionEngine, ScriptExecutionReport,
-    ScriptStepExecution, ScriptStepKind, ScriptWorkerEvent, ScriptWorkerQueue,
+    NoopScriptActionExecutor, PluginHookInvoker, ScriptActionExecutor, ScriptExecutionEngine,
+    ScriptExecutionReport, ScriptStepExecution, ScriptStepKind, ScriptWorkerEvent,
+    ScriptWorkerQueue, UnattachedPluginHookInvoker,
 };
 pub use script_persistence::{
     ScriptDocumentEntry, ScriptDocumentPersistence, ScriptDocumentPersistenceError,
