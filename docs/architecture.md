@@ -34,8 +34,8 @@ device-facing operation.
   builders, plugin automation execution, Plugin API bridge, and plugin bridge
   request routing.
 - `crates/tauri-platform`: Tauri 2 desktop/mobile platform adapters. The current
-  BLE scaffold exposes unsupported, permission-denied, powered-off, and ready
-  scan states.
+  BLE scaffold exposes a shared platform provider contract plus unsupported,
+  permission-denied, powered-off, and ready scan states.
 - `crates/protocol`: byte-level Coyote V2/V3 protocol parsing and command
   construction. It does not manage Bluetooth connections.
 - `crates/wave`: safe wave-domain values and Coyote V3 window conversion.
@@ -114,8 +114,8 @@ then synchronize the Core-owned runtime lifecycle so enabled plugins are loaded
 and disabled plugins are unloaded through the same path.
 
 Current plugin bridge routes include device status, wave control, automation
-run, automation document management, and plugin registry management. See
-`docs/external-control/websocket.md`.
+run, automation document management, plugin registry management, and enabled
+plugin hook invocation. See `docs/external-control/websocket.md`.
 
 ## Plugin Automation Flow
 
