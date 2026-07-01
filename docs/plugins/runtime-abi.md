@@ -3,6 +3,10 @@
 ArcFlow plugins run in sandboxed WASM or JavaScript runtimes. The runtime engine
 boundary is JSON-based so both engines share one host contract.
 
+When a plugin is installed from disk, Rust Core gives the runtime engine a load
+request containing the manifest and bundle root. The engine resolves the entry
+file from that context, but plugin code only receives invocation envelopes.
+
 ## Invocation
 
 ArcFlow invokes a loaded plugin with a `PluginInvocation` envelope:

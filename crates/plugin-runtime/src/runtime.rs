@@ -1,5 +1,7 @@
 //! Runtime Adapter Interface for WASM and JavaScript plugins.
 
+use std::path::PathBuf;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -42,6 +44,14 @@ impl PluginLoadRequest {
     #[must_use]
     pub fn bundle_root(&self) -> Option<&str> {
         self.bundle_root.as_deref()
+    }
+
+    /// Returns the resolved entry path if the plugin has a bundle root.
+    #[must_use]
+    pub fn resolved_entry_path(&self) -> Option<PathBuf> {
+        self.bundle_root
+            .as_ref()
+            .map(|bundle_root| PathBuf::from(bundle_root).join(&self.manifest.entry))
     }
 }
 
@@ -193,6 +203,24 @@ mod tests {
     }
 
     #[test]
+    fn resolves_entry_path_for_bundle_loads() {
+        let request =
+            PluginLoadRequest::with_bundle_root(manifest("dist/plugin.wasm"), "/plugins/example");
+
+        assert_eq!(
+            request.resolved_entry_path(),
+            Some(PathBuf::from("/plugins/example/dist/plugin.wasm"))
+        );
+    }
+
+    #[test]
+    fn manifest_only_loads_have_no_resolved_entry_path() {
+        let request = PluginLoadRequest::new(manifest("dist/plugin.wasm"));
+
+        assert_eq!(request.resolved_entry_path(), None);
+    }
+
+    #[test]
     fn deserializes_output_wire_envelope() {
         let output: PluginOutput = serde_json::from_value(json!({
             "actions": [
@@ -228,5 +256,17 @@ mod tests {
         let value = serde_json::to_value(PluginOutput::default()).unwrap();
 
         assert_eq!(value, json!({ "actions": [] }));
+    }
+
+    fn manifest(entry: &str) -> PluginManifest {
+        PluginManifest {
+            id: "com.example.plugin".to_owned(),
+            name: "Plugin".to_owned(),
+            version: "1.0.0".to_owned(),
+            runtime: RuntimeKind::Wasm,
+            entry: entry.to_owned(),
+            api_version: "1".to_owned(),
+            capabilities: vec![],
+        }
     }
 }
