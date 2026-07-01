@@ -30,6 +30,8 @@ Not covered yet:
 - Enable Bluetooth in the operating system.
 - Grant Bluetooth permission to the ArcFlow desktop app if prompted.
 - Keep channel strengths low for the first test.
+- ArcFlow desktop is configured as a single-instance app. Starting it again
+  should focus the existing window instead of opening another BLE session.
 
 Start the desktop dev shell:
 

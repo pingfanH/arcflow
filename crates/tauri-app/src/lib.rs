@@ -1698,7 +1698,17 @@ pub fn run<R>(context: tauri::Context<R>)
 where
     R: tauri::Runtime,
 {
-    tauri::Builder::<R>::new()
+    let builder = tauri::Builder::<R>::new();
+    #[cfg(feature = "single-instance")]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }));
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir()?;
