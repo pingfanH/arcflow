@@ -503,3 +503,107 @@ enabled.
   }
 }
 ```
+
+## Minimal Client Flow
+
+External software should treat the bridge as a plugin-domain control surface,
+not as a Bluetooth socket. The client asks for capabilities during hello, then
+sends JSON-RPC requests. Rust Core keeps ownership of device state, safety
+limits, sequence allocation, plugin capability checks, and BLE writes.
+
+This example uses the WebSocket implementation available in modern browser
+runtimes and recent Node.js releases. Replace the URL with the address returned
+by the Tauri `external_control_status` command after starting the bridge.
+
+```js
+const socket = new WebSocket("ws://127.0.0.1:49152");
+let nextId = 1;
+const pending = new Map();
+
+function request(method, params) {
+  const id = nextId++;
+  socket.send(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      method,
+      params,
+    }),
+  );
+
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+  });
+}
+
+socket.addEventListener("message", (event) => {
+  const message = JSON.parse(event.data);
+
+  if (message.method === "event") {
+    console.log("runtime event", message.params);
+    return;
+  }
+
+  const waiter = pending.get(message.id);
+  if (!waiter) {
+    return;
+  }
+  pending.delete(message.id);
+
+  if (message.error) {
+    waiter.reject(new Error(message.error.message));
+  } else {
+    waiter.resolve(message.result);
+  }
+});
+
+socket.addEventListener("open", async () => {
+  socket.send(
+    JSON.stringify({
+      clientName: "Example Plugin Bridge Client",
+      protocolVersion: 1,
+      requestedCapabilities: [
+        "device.read",
+        "wave.control",
+        "events.subscribe",
+        "plugin.manage",
+      ],
+    }),
+  );
+});
+
+socket.addEventListener("message", async function onHello(event) {
+  const hello = JSON.parse(event.data);
+  if (!hello.grantedCapabilities) {
+    return;
+  }
+
+  socket.removeEventListener("message", onHello);
+
+  console.log("granted", hello.grantedCapabilities);
+
+  const status = await request("device.status", { deviceId: "coyote-v3" });
+  console.log("device", status);
+
+  await request("device.activateOutput", { deviceId: "coyote-v3" });
+  await request("wave.startPreview", {
+    deviceId: "coyote-v3",
+    channelAStrength: 8,
+    channelBStrength: 0,
+  });
+
+  await request("plugin.invokeHook", {
+    pluginId: "dev.arcflow.example",
+    hook: "external.connected",
+    payload: { source: "example-client" },
+  });
+
+  setTimeout(() => {
+    request("wave.stopPreview").catch(console.error);
+  }, 1000);
+});
+```
+
+If the bridge was started in read-only mode, the hello above is rejected because
+`wave.control` and `plugin.manage` are not granted by that policy. In that mode,
+request only `external.ws`, `device.read`, and `events.subscribe`.
