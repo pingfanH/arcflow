@@ -58,10 +58,11 @@ events.subscribe
 external.ws
 ```
 
-The default local policy is intentionally conservative. It grants
-`device.read` and `events.subscribe`; broader capabilities such as
-`wave.control`, `script.manage`, and `plugin.manage` require a future explicit
-approval surface.
+The default local policy is intentionally conservative. Read-only mode grants
+`device.read` and `events.subscribe`. The UI can explicitly start the gateway in
+control mode, which additionally allows `wave.control`, `script.run`,
+`script.manage`, and `plugin.manage`. A running gateway keeps the policy it was
+started with; stop and restart it to switch modes.
 
 Plugin registry mutations are persisted in SQLite and synchronized into the
 Core-owned sandboxed plugin runtime. Plugins still cannot access Bluetooth

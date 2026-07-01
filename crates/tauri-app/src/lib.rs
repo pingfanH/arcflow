@@ -32,7 +32,13 @@ use tokio::sync::{broadcast, mpsc, Mutex as AsyncMutex};
 
 #[derive(Default)]
 struct ExternalControlState {
-    handle: Mutex<Option<WsGatewayHandle>>,
+    handle: Mutex<Option<RunningExternalControl>>,
+}
+
+struct RunningExternalControl {
+    handle: WsGatewayHandle,
+    control_mode: bool,
+    allowed_capabilities: Vec<Capability>,
 }
 
 struct CoreState {
@@ -188,6 +194,8 @@ struct ExternalControlStatus {
     bind_address: Option<String>,
     accepted_sessions: usize,
     active_sessions: usize,
+    control_mode: bool,
+    allowed_capabilities: Vec<Capability>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -594,12 +602,13 @@ fn external_control_status(state: tauri::State<'_, ExternalControlState>) -> Ext
 
     guard
         .as_ref()
-        .map(external_control_status_from_handle)
+        .map(external_control_status_from_running)
         .unwrap_or_else(stopped_external_control_status)
 }
 
 #[tauri::command]
 async fn start_external_control(
+    control_mode: bool,
     state: tauri::State<'_, ExternalControlState>,
     core_state: tauri::State<'_, CoreState>,
     storage_state: tauri::State<'_, StorageState>,
@@ -613,11 +622,15 @@ async fn start_external_control(
             .expect("external-control state mutex poisoned");
 
         if let Some(handle) = guard.as_ref() {
-            return Ok(external_control_status_from_handle(handle));
+            return Ok(external_control_status_from_running(handle));
         }
     }
 
-    let service = WsGatewayService::new(DEFAULT_LOCAL_BIND, GatewayPolicy::local_default());
+    let allowed_capabilities = external_control_allowed_capabilities(control_mode);
+    let service = WsGatewayService::new(
+        DEFAULT_LOCAL_BIND,
+        GatewayPolicy::new(allowed_capabilities.clone()),
+    );
     let runtime = runtime_state.inner().clone();
     let event_sender = runtime.events.server_event_sender();
     let handle = service
@@ -632,7 +645,12 @@ async fn start_external_control(
         )
         .await
         .map_err(|error| error.to_string())?;
-    let status = external_control_status_from_handle(&handle);
+    let running = RunningExternalControl {
+        handle,
+        control_mode,
+        allowed_capabilities,
+    };
+    let status = external_control_status_from_running(&running);
 
     let existing_status = {
         let mut guard = state
@@ -641,9 +659,9 @@ async fn start_external_control(
             .expect("external-control state mutex poisoned");
 
         if let Some(existing) = guard.as_ref() {
-            Some(external_control_status_from_handle(existing))
+            Some(external_control_status_from_running(existing))
         } else {
-            *guard = Some(handle);
+            *guard = Some(running);
             None
         }
     };
@@ -669,10 +687,27 @@ async fn stop_external_control(
     };
 
     if let Some(handle) = handle {
-        handle.stop().await;
+        handle.handle.stop().await;
     }
 
     Ok(stopped_external_control_status())
+}
+
+fn external_control_allowed_capabilities(control_mode: bool) -> Vec<Capability> {
+    if control_mode {
+        vec![
+            Capability::DeviceRead,
+            Capability::EventsSubscribe,
+            Capability::WaveControl,
+            Capability::ScriptRun,
+            Capability::ScriptManage,
+            Capability::PluginManage,
+        ]
+    } else {
+        GatewayPolicy::local_default()
+            .allowed_capabilities()
+            .to_vec()
+    }
 }
 
 fn stopped_external_control_status() -> ExternalControlStatus {
@@ -681,17 +716,21 @@ fn stopped_external_control_status() -> ExternalControlStatus {
         bind_address: None,
         accepted_sessions: 0,
         active_sessions: 0,
+        control_mode: false,
+        allowed_capabilities: Vec::new(),
     }
 }
 
-fn external_control_status_from_handle(handle: &WsGatewayHandle) -> ExternalControlStatus {
-    let status = handle.status();
+fn external_control_status_from_running(running: &RunningExternalControl) -> ExternalControlStatus {
+    let status = running.handle.status();
 
     ExternalControlStatus {
         running: status.running,
         bind_address: Some(status.bind_address),
         accepted_sessions: status.accepted_sessions,
         active_sessions: status.active_sessions,
+        control_mode: running.control_mode,
+        allowed_capabilities: running.allowed_capabilities.clone(),
     }
 }
 
@@ -1411,5 +1450,25 @@ mod tests {
                 platform: current_frontend_platform(),
             }
         );
+    }
+
+    #[test]
+    fn external_control_policy_defaults_to_read_only() {
+        assert_eq!(
+            external_control_allowed_capabilities(false),
+            vec![Capability::DeviceRead, Capability::EventsSubscribe]
+        );
+    }
+
+    #[test]
+    fn external_control_policy_can_enable_control_capabilities() {
+        let capabilities = external_control_allowed_capabilities(true);
+
+        assert!(capabilities.contains(&Capability::DeviceRead));
+        assert!(capabilities.contains(&Capability::EventsSubscribe));
+        assert!(capabilities.contains(&Capability::WaveControl));
+        assert!(capabilities.contains(&Capability::ScriptRun));
+        assert!(capabilities.contains(&Capability::ScriptManage));
+        assert!(capabilities.contains(&Capability::PluginManage));
     }
 }

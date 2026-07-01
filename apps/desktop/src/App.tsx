@@ -44,6 +44,8 @@ type ExternalControlStatus = {
   bindAddress: string | null;
   acceptedSessions: number;
   activeSessions: number;
+  controlMode: boolean;
+  allowedCapabilities: string[];
 };
 
 type DeviceSummary = {
@@ -180,6 +182,8 @@ const stoppedExternalControl: ExternalControlStatus = {
   bindAddress: null,
   acceptedSessions: 0,
   activeSessions: 0,
+  controlMode: false,
+  allowedCapabilities: [],
 };
 
 const emptyDeviceScan: DeviceScanResponse = {
@@ -272,6 +276,7 @@ function App() {
   const [externalStatus, setExternalStatus] =
     useState<ExternalControlStatus>(stoppedExternalControl);
   const [externalBusy, setExternalBusy] = useState(false);
+  const [externalControlMode, setExternalControlMode] = useState(false);
   const [lastScan, setLastScan] = useState<DeviceScanResponse | null>(null);
   const [storageStatus, setStorageStatus] = useState<StorageStatus | null>(null);
   const [runtimeStatus, setRuntimeStatus] = useState<RuntimeStatus | null>(null);
@@ -355,7 +360,9 @@ function App() {
 
   const startExternalControl = () => {
     setExternalBusy(true);
-    invoke<ExternalControlStatus>("start_external_control")
+    invoke<ExternalControlStatus>("start_external_control", {
+      controlMode: externalControlMode,
+    })
       .then(setExternalStatus)
       .catch(() => setExternalStatus(stoppedExternalControl))
       .finally(() => setExternalBusy(false));
@@ -773,7 +780,9 @@ function App() {
               <ExternalControlPanel
                 defaultBind={status?.externalControlBind ?? "127.0.0.1:0"}
                 busy={externalBusy}
+                controlMode={externalControlMode}
                 status={externalStatus}
+                onControlModeChange={setExternalControlMode}
                 onStart={startExternalControl}
                 onStop={stopExternalControl}
               />
@@ -1225,7 +1234,9 @@ function errorMessage(error: unknown): string {
 type ExternalControlPanelProps = {
   defaultBind: string;
   busy: boolean;
+  controlMode: boolean;
   status: ExternalControlStatus;
+  onControlModeChange: (enabled: boolean) => void;
   onStart: () => void;
   onStop: () => void;
 };
@@ -1233,12 +1244,16 @@ type ExternalControlPanelProps = {
 function ExternalControlPanel({
   defaultBind,
   busy,
+  controlMode,
   status,
+  onControlModeChange,
   onStart,
   onStop,
 }: ExternalControlPanelProps) {
   const running = status.running;
   const bind = status.bindAddress ?? defaultBind;
+  const effectiveControlMode = running ? status.controlMode : controlMode;
+  const modeLabel = effectiveControlMode ? "Control" : "Read-only";
 
   return (
     <div className="min-w-0 rounded-lg border border-zinc-200 bg-white p-4 shadow-sm">
@@ -1252,8 +1267,23 @@ function ExternalControlPanel({
         </div>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-zinc-950">External WS</div>
-          <div className="truncate text-sm text-zinc-500">{running ? bind : "Stopped"}</div>
+          <div className="truncate text-sm text-zinc-500">
+            {running ? `${bind} - ${modeLabel}` : modeLabel}
+          </div>
         </div>
+        <button
+          className={`grid size-9 place-items-center rounded-lg border text-sm transition ${
+            effectiveControlMode
+              ? "border-sky-200 bg-sky-50 text-sky-700"
+              : "border-zinc-200 bg-white text-zinc-600 hover:bg-zinc-50"
+          } disabled:cursor-not-allowed disabled:opacity-50`}
+          disabled={busy || running}
+          title={effectiveControlMode ? "Use read-only WebSocket" : "Allow WebSocket control"}
+          type="button"
+          onClick={() => onControlModeChange(!controlMode)}
+        >
+          {effectiveControlMode ? <ToggleRight size={17} /> : <ToggleLeft size={17} />}
+        </button>
         <button
           className={`grid size-9 place-items-center rounded-lg border text-sm transition ${
             running
