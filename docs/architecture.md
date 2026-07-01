@@ -69,6 +69,11 @@ events, and returns empty plugin output so host wiring can be tested without
 executing untrusted code. Real engines will replace the adapter behind the same
 `RuntimeAdapter` boundary.
 
+Desktop startup restores the persisted plugin registry into this sandboxed
+runtime host. UI and WebSocket plugin registry mutations update SQLite first,
+then synchronize the Core-owned runtime lifecycle so enabled plugins are loaded
+and disabled plugins are unloaded through the same path.
+
 Current external routes include device status, wave control, script run,
 script document management, and plugin registry management. See
 `docs/external-control/websocket.md`.

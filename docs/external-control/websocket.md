@@ -63,6 +63,10 @@ The default local policy is intentionally conservative. It grants
 `wave.control`, `script.manage`, and `plugin.manage` require a future explicit
 approval surface.
 
+Plugin registry mutations are persisted in SQLite and synchronized into the
+Core-owned sandboxed plugin runtime. Plugins still cannot access Bluetooth
+directly; enabled plugins are loaded behind the Plugin API boundary.
+
 ## JSON-RPC
 
 After hello, requests use JSON-RPC 2.0 envelopes:

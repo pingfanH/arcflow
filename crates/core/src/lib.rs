@@ -17,6 +17,7 @@ pub mod output;
 pub mod plugin_api;
 pub mod plugin_bundle;
 pub mod plugin_registry_persistence;
+pub mod plugin_runtime_controller;
 pub mod runtime;
 pub mod safety;
 pub mod script_execution;
@@ -39,14 +40,19 @@ pub use error::CoreError;
 pub use external::{
     authorized_core_command_from_external_request, core_command_from_external_request,
     execute_plugin_registry_external_request, execute_script_documents_external_request,
-    is_plugin_registry_external_request, is_script_documents_external_request,
-    required_capability_for_external_request,
+    is_plugin_registry_external_request, is_plugin_registry_mutation_external_request,
+    is_script_documents_external_request, required_capability_for_external_request,
 };
 pub use output::{CoyoteV3OutputController, DeviceBleOutputSink};
 pub use plugin_api::{PluginApi, PluginApiError};
 pub use plugin_bundle::{PluginBundle, PluginBundleError};
 pub use plugin_registry_persistence::{
     PluginRegistryEntry, PluginRegistryPersistence, PluginRegistryPersistenceError,
+};
+pub use plugin_runtime_controller::{
+    PluginRuntimeControllerError, PluginRuntimeSyncReport, RecordingPluginHost,
+    RecordingPluginRuntime, RecordingPluginRuntimeController, RecordingPluginRuntimeRouter,
+    RecordingPluginRuntimeSnapshots,
 };
 pub use runtime::{
     ArcFlowCore, DeviceDiscoveryController, DeviceOutputController, NoopDeviceDiscoveryController,

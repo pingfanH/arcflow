@@ -95,6 +95,15 @@ pub fn is_plugin_registry_external_request(request: &JsonRpcRequest) -> bool {
     )
 }
 
+/// Returns whether a plugin registry request mutates persisted plugin state.
+#[must_use]
+pub fn is_plugin_registry_mutation_external_request(request: &JsonRpcRequest) -> bool {
+    matches!(
+        request.method.as_str(),
+        PLUGIN_INSTALL_MANIFEST_METHOD | PLUGIN_SET_ENABLED_METHOD
+    )
+}
+
 /// Returns whether a request is handled by the storage-backed script document surface.
 #[must_use]
 pub fn is_script_documents_external_request(request: &JsonRpcRequest) -> bool {
@@ -475,6 +484,22 @@ mod tests {
         let request = JsonRpcRequest::new(RequestId::Number(6), PLUGIN_REGISTRY_METHOD, None);
 
         assert!(is_plugin_registry_external_request(&request));
+        assert!(!is_plugin_registry_mutation_external_request(&request));
+    }
+
+    #[test]
+    fn detects_plugin_registry_mutation_requests() {
+        let request = JsonRpcRequest::new(
+            RequestId::Number(6),
+            PLUGIN_SET_ENABLED_METHOD,
+            Some(json!({
+                "pluginId": "plugin.external",
+                "enabled": true,
+            })),
+        );
+
+        assert!(is_plugin_registry_external_request(&request));
+        assert!(is_plugin_registry_mutation_external_request(&request));
     }
 
     #[test]

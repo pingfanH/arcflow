@@ -6,11 +6,13 @@ use std::{
 
 use arcflow_core::{
     execute_plugin_registry_external_request, execute_script_documents_external_request,
-    is_plugin_registry_external_request, is_script_documents_external_request, ArcFlowCore,
-    CoreScriptActionExecutor, CoyoteV3OutputController, DeviceDiscoveryController, DeviceModel,
-    DeviceOutputController, DeviceScanResult, DeviceStatus, PluginBundle, PluginRegistryEntry,
-    PluginRegistryPersistence, SafetyLimits, ScriptDocumentEntry, ScriptDocumentPersistence,
-    ScriptWorkerEvent, ScriptWorkerQueue, StopOutputResult, StorageScriptRunner,
+    is_plugin_registry_external_request, is_plugin_registry_mutation_external_request,
+    is_script_documents_external_request, ArcFlowCore, CoreScriptActionExecutor,
+    CoyoteV3OutputController, DeviceDiscoveryController, DeviceModel, DeviceOutputController,
+    DeviceScanResult, DeviceStatus, PluginBundle, PluginRegistryEntry, PluginRegistryPersistence,
+    PluginRuntimeSyncReport, RecordingPluginRuntimeController, SafetyLimits, ScriptDocumentEntry,
+    ScriptDocumentPersistence, ScriptWorkerEvent, ScriptWorkerQueue, StopOutputResult,
+    StorageScriptRunner,
 };
 use arcflow_external_control::{
     ClientSession, GatewayPolicy, JsonRpcRequest, JsonRpcResponse, RpcError, WsGatewayHandle,
@@ -24,7 +26,7 @@ use arcflow_tauri_platform::{
 };
 use serde::Serialize;
 use tauri::Manager;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex as AsyncMutex};
 
 #[derive(Default)]
 struct ExternalControlState {
@@ -44,6 +46,12 @@ struct StorageState {
 struct RuntimeState {
     output_controller: Arc<CoyoteV3OutputController<TauriBleOutputSink>>,
     output_sink: TauriBleOutputSink,
+    events: RuntimeEventLog,
+}
+
+#[derive(Clone)]
+struct PluginRuntimeState {
+    controller: Arc<AsyncMutex<RecordingPluginRuntimeController>>,
     events: RuntimeEventLog,
 }
 
@@ -229,50 +237,65 @@ fn plugin_registry(
 }
 
 #[tauri::command]
-fn install_plugin_manifest(
+async fn install_plugin_manifest(
     manifest_json: String,
     state: tauri::State<'_, StorageState>,
+    plugin_runtime: tauri::State<'_, PluginRuntimeState>,
 ) -> Result<PluginRegistryResponse, String> {
-    let storage = state.storage.lock().expect("storage state mutex poisoned");
-    let persistence = PluginRegistryPersistence::new(&storage);
-    let plugins = persistence
-        .install_manifest_json(&manifest_json)
-        .map_err(|error| error.to_string())?;
+    let plugins = {
+        let storage = state.storage.lock().expect("storage state mutex poisoned");
+        let persistence = PluginRegistryPersistence::new(&storage);
+        persistence
+            .install_manifest_json(&manifest_json)
+            .map_err(|error| error.to_string())?
+    };
+
+    sync_plugin_runtime_from_storage(&state.storage, plugin_runtime.inner()).await?;
 
     Ok(PluginRegistryResponse { plugins })
 }
 
 #[tauri::command]
-fn install_plugin_bundle(
+async fn install_plugin_bundle(
     bundle_path: String,
     state: tauri::State<'_, StorageState>,
+    plugin_runtime: tauri::State<'_, PluginRuntimeState>,
 ) -> Result<PluginRegistryResponse, String> {
     let bundle = PluginBundle::load(bundle_path).map_err(|error| error.to_string())?;
     let manifest_json =
         serde_json::to_string(bundle.manifest()).map_err(|error| error.to_string())?;
-    let storage = state.storage.lock().expect("storage state mutex poisoned");
-    let persistence = PluginRegistryPersistence::new(&storage);
-    let plugins = persistence
-        .install_manifest_json_with_bundle_root(
-            &manifest_json,
-            Some(bundle.root().display().to_string()),
-        )
-        .map_err(|error| error.to_string())?;
+    let plugins = {
+        let storage = state.storage.lock().expect("storage state mutex poisoned");
+        let persistence = PluginRegistryPersistence::new(&storage);
+        persistence
+            .install_manifest_json_with_bundle_root(
+                &manifest_json,
+                Some(bundle.root().display().to_string()),
+            )
+            .map_err(|error| error.to_string())?
+    };
+
+    sync_plugin_runtime_from_storage(&state.storage, plugin_runtime.inner()).await?;
 
     Ok(PluginRegistryResponse { plugins })
 }
 
 #[tauri::command]
-fn set_plugin_enabled(
+async fn set_plugin_enabled(
     plugin_id: String,
     enabled: bool,
     state: tauri::State<'_, StorageState>,
+    plugin_runtime: tauri::State<'_, PluginRuntimeState>,
 ) -> Result<PluginRegistryResponse, String> {
-    let storage = state.storage.lock().expect("storage state mutex poisoned");
-    let persistence = PluginRegistryPersistence::new(&storage);
-    let plugins = persistence
-        .set_enabled(&plugin_id, enabled)
-        .map_err(|error| error.to_string())?;
+    let plugins = {
+        let storage = state.storage.lock().expect("storage state mutex poisoned");
+        let persistence = PluginRegistryPersistence::new(&storage);
+        persistence
+            .set_enabled(&plugin_id, enabled)
+            .map_err(|error| error.to_string())?
+    };
+
+    sync_plugin_runtime_from_storage(&state.storage, plugin_runtime.inner()).await?;
 
     Ok(PluginRegistryResponse { plugins })
 }
@@ -368,6 +391,7 @@ async fn start_external_control(
     core_state: tauri::State<'_, CoreState>,
     storage_state: tauri::State<'_, StorageState>,
     runtime_state: tauri::State<'_, RuntimeState>,
+    plugin_runtime_state: tauri::State<'_, PluginRuntimeState>,
 ) -> Result<ExternalControlStatus, String> {
     {
         let guard = state
@@ -386,6 +410,7 @@ async fn start_external_control(
             core_state.core.clone(),
             Arc::clone(&storage_state.storage),
             runtime_state.inner().clone(),
+            plugin_runtime_state.inner().clone(),
         ))
         .await
         .map_err(|error| error.to_string())?;
@@ -456,23 +481,38 @@ fn external_request_handler(
     core: ArcFlowCore,
     storage: Arc<Mutex<Storage>>,
     runtime: RuntimeState,
+    plugin_runtime: PluginRuntimeState,
 ) -> WsRequestHandler {
     Arc::new(move |session: ClientSession, request: JsonRpcRequest| {
         let core = core.clone();
         let storage = Arc::clone(&storage);
         let runtime = runtime.clone();
+        let plugin_runtime = plugin_runtime.clone();
 
         Box::pin(async move {
             let id = request.id.clone();
 
             if is_plugin_registry_external_request(&request) {
+                let is_mutation = is_plugin_registry_mutation_external_request(&request);
                 let result = {
                     let storage = storage.lock().expect("storage state mutex poisoned");
                     execute_plugin_registry_external_request(&session, &request, &storage)
                 };
 
                 return match result {
-                    Ok(result) => JsonRpcResponse::ok(id, result),
+                    Ok(result) => {
+                        if is_mutation {
+                            match sync_plugin_runtime_from_storage(&storage, &plugin_runtime).await
+                            {
+                                Ok(_) => JsonRpcResponse::ok(id, result),
+                                Err(error) => {
+                                    JsonRpcResponse::error(id, RpcError::new(-32000, error))
+                                }
+                            }
+                        } else {
+                            JsonRpcResponse::ok(id, result)
+                        }
+                    }
                     Err(error) => {
                         JsonRpcResponse::error(id, RpcError::new(-32000, error.to_string()))
                     }
@@ -583,6 +623,68 @@ fn runtime_events_from_state(runtime: &RuntimeState) -> RuntimeEventsResponse {
     }
 }
 
+async fn sync_plugin_runtime_from_storage(
+    storage: &Arc<Mutex<Storage>>,
+    plugin_runtime: &PluginRuntimeState,
+) -> Result<PluginRuntimeSyncReport, String> {
+    let registry = {
+        let storage = storage.lock().expect("storage state mutex poisoned");
+        PluginRegistryPersistence::new(&storage)
+            .load()
+            .map_err(|error| error.to_string())?
+    };
+
+    let report = {
+        let mut controller = plugin_runtime.controller.lock().await;
+        controller
+            .sync_from_registry(&registry)
+            .await
+            .map_err(|error| error.to_string())?
+    };
+
+    log_plugin_runtime_sync(&plugin_runtime.events, &report);
+    Ok(report)
+}
+
+fn log_plugin_runtime_sync(events: &RuntimeEventLog, report: &PluginRuntimeSyncReport) {
+    for plugin_id in &report.installed_plugin_ids {
+        events.push(
+            "plugin.installed",
+            format!("plugin `{plugin_id}` installed in runtime host"),
+        );
+    }
+
+    for plugin_id in &report.loaded_plugin_ids {
+        events.push(
+            "plugin.enabled",
+            format!("plugin `{plugin_id}` loaded into sandboxed runtime"),
+        );
+    }
+
+    for plugin_id in &report.unloaded_plugin_ids {
+        events.push(
+            "plugin.disabled",
+            format!("plugin `{plugin_id}` unloaded from sandboxed runtime"),
+        );
+    }
+}
+
+fn spawn_plugin_runtime_restore(storage: Arc<Mutex<Storage>>, plugin_runtime: PluginRuntimeState) {
+    tauri::async_runtime::spawn(async move {
+        match sync_plugin_runtime_from_storage(&storage, &plugin_runtime).await {
+            Ok(report) if !report.changed() => plugin_runtime.events.push(
+                "plugin.runtime.ready",
+                "plugin runtime restored with no enabled plugins",
+            ),
+            Ok(_) => {}
+            Err(error) => plugin_runtime.events.push(
+                "plugin.runtime.failed",
+                format!("plugin runtime restore failed: {error}"),
+            ),
+        }
+    });
+}
+
 fn spawn_runtime_event_listeners(
     events: RuntimeEventLog,
     mut script_events: mpsc::UnboundedReceiver<ScriptWorkerEvent>,
@@ -672,6 +774,10 @@ pub fn run() {
             let storage = Arc::new(Mutex::new(Storage::open(&database_path)?));
             let safety_limits = SafetyLimits::conservative();
             let events = RuntimeEventLog::default();
+            let plugin_runtime = PluginRuntimeState {
+                controller: Arc::new(AsyncMutex::new(RecordingPluginRuntimeController::new())),
+                events: events.clone(),
+            };
             let (script_event_sender, script_events) = mpsc::unbounded_channel();
             let (output_event_sender, output_events) = mpsc::unbounded_channel();
             let discovery_controller: Arc<dyn DeviceDiscoveryController> =
@@ -698,6 +804,7 @@ pub fn run() {
                 Arc::new(script_queue),
             );
             spawn_runtime_event_listeners(events.clone(), script_events, output_events);
+            spawn_plugin_runtime_restore(Arc::clone(&storage), plugin_runtime.clone());
 
             app.manage(StorageState {
                 storage,
@@ -708,6 +815,7 @@ pub fn run() {
                 output_sink,
                 events,
             });
+            app.manage(plugin_runtime);
             app.manage(CoreState {
                 core: ArcFlowCore::with_controllers(
                     safety_limits,
