@@ -9,11 +9,13 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::{
-    CoreCommand, CoreError, DeviceId, PluginRegistryPersistence, ScriptDocumentPersistence,
+    CoreCommand, CoreError, DeviceId, PluginBundle, PluginRegistryPersistence,
+    ScriptDocumentPersistence,
 };
 
 const PLUGIN_REGISTRY_METHOD: &str = "plugin.registry";
 const PLUGIN_INSTALL_MANIFEST_METHOD: &str = "plugin.installManifest";
+const PLUGIN_INSTALL_BUNDLE_METHOD: &str = "plugin.installBundle";
 const PLUGIN_SET_ENABLED_METHOD: &str = "plugin.setEnabled";
 const PLUGIN_DELETE_METHOD: &str = "plugin.delete";
 const SCRIPT_LIST_METHOD: &str = "script.list";
@@ -94,6 +96,7 @@ pub fn is_plugin_registry_external_request(request: &JsonRpcRequest) -> bool {
         request.method.as_str(),
         PLUGIN_REGISTRY_METHOD
             | PLUGIN_INSTALL_MANIFEST_METHOD
+            | PLUGIN_INSTALL_BUNDLE_METHOD
             | PLUGIN_SET_ENABLED_METHOD
             | PLUGIN_DELETE_METHOD
     )
@@ -104,7 +107,10 @@ pub fn is_plugin_registry_external_request(request: &JsonRpcRequest) -> bool {
 pub fn is_plugin_registry_mutation_external_request(request: &JsonRpcRequest) -> bool {
     matches!(
         request.method.as_str(),
-        PLUGIN_INSTALL_MANIFEST_METHOD | PLUGIN_SET_ENABLED_METHOD | PLUGIN_DELETE_METHOD
+        PLUGIN_INSTALL_MANIFEST_METHOD
+            | PLUGIN_INSTALL_BUNDLE_METHOD
+            | PLUGIN_SET_ENABLED_METHOD
+            | PLUGIN_DELETE_METHOD
     )
 }
 
@@ -130,6 +136,21 @@ pub fn execute_plugin_registry_external_request(
         PLUGIN_INSTALL_MANIFEST_METHOD => {
             let params: PluginInstallManifestParams = read_params(request)?;
             persistence.install_manifest_json(&params.manifest_json)
+        }
+        PLUGIN_INSTALL_BUNDLE_METHOD => {
+            let params: PluginInstallBundleParams = read_params(request)?;
+            let bundle = PluginBundle::load(&params.bundle_path)
+                .map_err(|error| CoreError::InvalidExternalRequest(error.to_string()))?;
+            let manifest_json = serde_json::to_string(bundle.manifest()).map_err(|error| {
+                CoreError::InvalidExternalRequest(format!(
+                    "failed to serialize bundle manifest: {error}"
+                ))
+            })?;
+
+            persistence.install_manifest_json_with_bundle_root(
+                &manifest_json,
+                Some(bundle.root().display().to_string()),
+            )
         }
         PLUGIN_SET_ENABLED_METHOD => {
             let params: PluginSetEnabledParams = read_params(request)?;
@@ -287,6 +308,12 @@ struct PluginInstallManifestParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct PluginInstallBundleParams {
+    bundle_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct PluginSetEnabledParams {
     plugin_id: String,
     enabled: bool,
@@ -359,6 +386,12 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use super::*;
     use arcflow_external_control::{ClientHello, GatewayPolicy, RequestId, PROTOCOL_VERSION};
     use arcflow_storage::Storage;
@@ -505,11 +538,8 @@ mod tests {
     fn detects_plugin_registry_mutation_requests() {
         let request = JsonRpcRequest::new(
             RequestId::Number(6),
-            PLUGIN_SET_ENABLED_METHOD,
-            Some(json!({
-                "pluginId": "plugin.external",
-                "enabled": true,
-            })),
+            PLUGIN_INSTALL_BUNDLE_METHOD,
+            Some(json!({ "bundlePath": "/plugins/plugin.external" })),
         );
 
         assert!(is_plugin_registry_external_request(&request));
@@ -618,6 +648,45 @@ mod tests {
             .get("plugin.external")
             .unwrap()
             .is_some());
+    }
+
+    #[test]
+    fn installs_plugin_bundle_through_external_request() {
+        let storage = Storage::in_memory().unwrap();
+        let session = GatewayPolicy::new(vec![Capability::PluginManage])
+            .accept(ClientHello {
+                client_name: "Plugin Manager".to_owned(),
+                protocol_version: PROTOCOL_VERSION,
+                requested_capabilities: vec![Capability::PluginManage],
+            })
+            .unwrap();
+        let bundle_root = test_bundle_root("external-install");
+        write_test_bundle(&bundle_root, "plugin.bundle");
+        let request = JsonRpcRequest::new(
+            RequestId::Number(9),
+            PLUGIN_INSTALL_BUNDLE_METHOD,
+            Some(json!({ "bundlePath": bundle_root.display().to_string() })),
+        );
+
+        let result =
+            execute_plugin_registry_external_request(&session, &request, &storage).unwrap();
+
+        assert_eq!(result["plugins"][0]["id"], "plugin.bundle");
+        assert_eq!(
+            result["plugins"][0]["bundleRoot"],
+            bundle_root.display().to_string()
+        );
+        assert_eq!(
+            storage
+                .plugin_registry()
+                .get("plugin.bundle")
+                .unwrap()
+                .unwrap()
+                .bundle_root,
+            Some(bundle_root.display().to_string())
+        );
+
+        fs::remove_dir_all(bundle_root).unwrap();
     }
 
     #[test]
@@ -737,5 +806,33 @@ mod tests {
                 requested_capabilities: vec![Capability::ScriptManage],
             })
             .unwrap()
+    }
+
+    fn write_test_bundle(root: &PathBuf, plugin_id: &str) {
+        fs::create_dir_all(root.join("dist")).unwrap();
+        fs::write(root.join("dist/plugin.wasm"), b"").unwrap();
+        fs::write(
+            root.join("manifest.json"),
+            format!(
+                r#"{{
+                    "id":"{plugin_id}",
+                    "name":"External Plugin",
+                    "version":"1.0.0",
+                    "runtime":"wasm",
+                    "entry":"dist/plugin.wasm",
+                    "apiVersion":"1",
+                    "capabilities":["device.read"]
+                }}"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn test_bundle_root(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("arcflow-external-bundle-{name}-{suffix}"))
     }
 }

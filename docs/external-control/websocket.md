@@ -314,6 +314,24 @@ Required capability: `plugin.manage`
 }
 ```
 
+### `plugin.installBundle`
+
+Required capability: `plugin.manage`
+
+Loads a plugin bundle directory containing `manifest.json` and the manifest
+entry file, then persists the bundle root for runtime loading.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 13,
+  "method": "plugin.installBundle",
+  "params": {
+    "bundlePath": "/Users/me/ArcFlow/plugins/dev.arcflow.example"
+  }
+}
+```
+
 ### `plugin.setEnabled`
 
 Required capability: `plugin.manage`
@@ -321,7 +339,7 @@ Required capability: `plugin.manage`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 13,
+  "id": 14,
   "method": "plugin.setEnabled",
   "params": {
     "pluginId": "dev.arcflow.example",
@@ -340,7 +358,7 @@ enabled.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 14,
+  "id": 15,
   "method": "plugin.delete",
   "params": {
     "pluginId": "dev.arcflow.example"
