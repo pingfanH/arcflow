@@ -12,10 +12,10 @@ use crate::{
 
 /// WASM runtime adapter that validates bundle bytes before recording lifecycle.
 ///
-/// This adapter is an execution-ready stepping stone: it proves ArcFlow can load
-/// and validate real WASM module bytes from plugin bundles while the host ABI
-/// and engine call convention continue to settle. It does not execute WASM
-/// exports yet.
+/// Bundle-backed plugins are read from disk and validated as WebAssembly
+/// modules. Manifest-only plugins still use recording lifecycle so development
+/// and registry management can proceed before a bundle has been attached. This
+/// adapter does not execute WASM exports yet.
 #[derive(Debug, Clone)]
 pub struct WasmValidationRuntimeAdapter {
     recorder: RecordingRuntimeAdapter,
@@ -60,26 +60,22 @@ impl RuntimeAdapter for WasmValidationRuntimeAdapter {
             )));
         }
 
-        let entry_path = request.resolved_entry_path().ok_or_else(|| {
-            RuntimeError::Runtime(format!(
-                "wasm plugin `{}` requires a bundle root before it can be loaded",
-                manifest.id
-            ))
-        })?;
-        let bytes = fs::read(&entry_path).map_err(|error| {
-            RuntimeError::Runtime(format!(
-                "failed to read wasm entry `{}`: {error}",
-                entry_path.display()
-            ))
-        })?;
+        if let Some(entry_path) = request.resolved_entry_path() {
+            let bytes = fs::read(&entry_path).map_err(|error| {
+                RuntimeError::Runtime(format!(
+                    "failed to read wasm entry `{}`: {error}",
+                    entry_path.display()
+                ))
+            })?;
 
-        Validator::new().validate_all(&bytes).map_err(|error| {
-            RuntimeError::Runtime(format!(
-                "invalid wasm entry `{}` for plugin `{}`: {error}",
-                entry_path.display(),
-                manifest.id
-            ))
-        })?;
+            Validator::new().validate_all(&bytes).map_err(|error| {
+                RuntimeError::Runtime(format!(
+                    "invalid wasm entry `{}` for plugin `{}`: {error}",
+                    entry_path.display(),
+                    manifest.id
+                ))
+            })?;
+        }
 
         self.recorder.load(request).await
     }
@@ -159,13 +155,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_manifest_only_wasm_loads() {
+    async fn records_manifest_only_wasm_loads() {
         let runtime = WasmValidationRuntimeAdapter::new();
         let request = PluginLoadRequest::new(manifest(RuntimeKind::Wasm, "dist/plugin.wasm"));
 
-        let error = runtime.load(&request).await.unwrap_err();
+        let handle = runtime.load(&request).await.unwrap();
 
-        assert!(error.to_string().contains("requires a bundle root"));
+        assert_eq!(handle.plugin_id(), "dev.arcflow.wasm-test");
+        assert_eq!(runtime.loaded_plugins()[0].bundle_root, None);
     }
 
     #[tokio::test]

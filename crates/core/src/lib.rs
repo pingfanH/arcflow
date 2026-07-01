@@ -50,9 +50,9 @@ pub use plugin_registry_persistence::{
     PluginRegistryEntry, PluginRegistryPersistence, PluginRegistryPersistenceError,
 };
 pub use plugin_runtime_controller::{
-    PluginRuntimeControllerError, PluginRuntimeSyncReport, RecordingPluginHost,
-    RecordingPluginRuntime, RecordingPluginRuntimeController, RecordingPluginRuntimeHookInvoker,
-    RecordingPluginRuntimeRouter, RecordingPluginRuntimeSnapshots,
+    ArcFlowPluginHost, ArcFlowPluginRuntime, ArcFlowPluginRuntimeRouter,
+    PluginRuntimeControllerError, PluginRuntimeSyncReport, RecordingPluginRuntimeController,
+    RecordingPluginRuntimeHookInvoker, RecordingPluginRuntimeSnapshots,
 };
 pub use runtime::{
     ArcFlowCore, DeviceDiscoveryController, DeviceOutputController, NoopDeviceDiscoveryController,

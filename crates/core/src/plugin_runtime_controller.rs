@@ -6,6 +6,7 @@ use std::{collections::BTreeSet, sync::Arc};
 use arcflow_plugin_runtime::{
     PluginHost, PluginHostError, PluginInvocation, PluginOutput, PluginRegistry, RecordedPlugin,
     RecordingRuntimeAdapter, RecordingRuntimeSnapshot, RuntimeRouter, SandboxedRuntime,
+    WasmValidationRuntimeAdapter,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -13,24 +14,24 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::{CoreError, PluginHookInvoker};
 
-/// Runtime router used by the current recording plugin runtime.
-pub type RecordingPluginRuntimeRouter =
-    RuntimeRouter<RecordingRuntimeAdapter, RecordingRuntimeAdapter>;
+/// Runtime router used by the current plugin runtime.
+pub type ArcFlowPluginRuntimeRouter =
+    RuntimeRouter<WasmValidationRuntimeAdapter, RecordingRuntimeAdapter>;
 
-/// Sandboxed runtime used by the current recording plugin host.
-pub type RecordingPluginRuntime = SandboxedRuntime<RecordingPluginRuntimeRouter>;
+/// Sandboxed runtime used by the current plugin host.
+pub type ArcFlowPluginRuntime = SandboxedRuntime<ArcFlowPluginRuntimeRouter>;
 
-/// Plugin host used by the current recording plugin lifecycle controller.
-pub type RecordingPluginHost = PluginHost<RecordingPluginRuntime>;
+/// Plugin host used by the current plugin lifecycle controller.
+pub type ArcFlowPluginHost = PluginHost<ArcFlowPluginRuntime>;
 
 /// Core-owned controller for plugin load/unload lifecycle.
 #[derive(Debug)]
 pub struct RecordingPluginRuntimeController {
-    host: RecordingPluginHost,
+    host: ArcFlowPluginHost,
 }
 
 impl RecordingPluginRuntimeController {
-    /// Constructs a plugin runtime controller backed by recording WASM/JS runtimes.
+    /// Constructs a plugin runtime controller backed by WASM validation and JS recording runtimes.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -258,19 +259,27 @@ impl PluginHookInvoker for RecordingPluginRuntimeHookInvoker {
     }
 }
 
-fn new_recording_plugin_host() -> RecordingPluginHost {
+fn new_recording_plugin_host() -> ArcFlowPluginHost {
     PluginHost::new(SandboxedRuntime::default_policy(RuntimeRouter::new(
-        RecordingRuntimeAdapter::wasm(),
+        WasmValidationRuntimeAdapter::new(),
         RecordingRuntimeAdapter::javascript(),
     )))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use arcflow_plugin_runtime::{Capability, PluginManifest, RuntimeKind};
     use serde_json::json;
 
     use super::*;
+
+    const MINIMAL_WASM_MODULE: &[u8] = b"\0asm\x01\0\0\0";
 
     fn manifest(id: &str, runtime: RuntimeKind) -> PluginManifest {
         PluginManifest {
@@ -319,11 +328,14 @@ mod tests {
 
     #[tokio::test]
     async fn sync_preserves_bundle_roots_for_loaded_plugins() {
+        let bundle_root = test_bundle_root("plugin-runtime-controller");
+        fs::create_dir_all(bundle_root.join("dist")).unwrap();
+        fs::write(bundle_root.join("dist/plugin.wasm"), MINIMAL_WASM_MODULE).unwrap();
         let mut registry = PluginRegistry::new();
         registry
             .install_with_bundle_root(
                 manifest("plugin.wasm", RuntimeKind::Wasm),
-                "/plugins/plugin.wasm",
+                bundle_root.display().to_string(),
             )
             .unwrap();
         registry.enable("plugin.wasm").unwrap();
@@ -333,8 +345,10 @@ mod tests {
 
         assert_eq!(
             controller.loaded_plugins()[0].bundle_root,
-            Some("/plugins/plugin.wasm".to_owned())
+            Some(bundle_root.display().to_string())
         );
+
+        fs::remove_dir_all(bundle_root).unwrap();
     }
 
     #[tokio::test]
@@ -418,5 +432,13 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("not installed"));
+    }
+
+    fn test_bundle_root(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("arcflow-{name}-{suffix}"))
     }
 }

@@ -6,8 +6,10 @@ boundary is JSON-based so both engines share one host contract.
 When a plugin is installed from disk, Rust Core gives the runtime engine a load
 request containing the manifest and bundle root. The engine resolves the entry
 file from that context, but plugin code only receives invocation envelopes.
-The current WASM adapter validates module bytes before accepting a bundle; the
-execution call convention is still being wired behind the same ABI.
+The current WASM adapter validates module bytes before accepting a bundle-backed
+plugin. Manifest-only WASM plugins still use recording lifecycle for
+development; the execution call convention is still being wired behind the same
+ABI.
 
 ## Invocation
 
