@@ -3,7 +3,7 @@
 # Tauri, web, and package manager build output.
 /apps/*/dist/
 /apps/*/build/
-/node_modules/
+node_modules/
 /.turbo/
 /.vite/
 
