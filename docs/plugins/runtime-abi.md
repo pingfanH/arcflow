@@ -52,6 +52,16 @@ Each action is routed through Rust Core's Plugin API. The API checks the
 plugin's declared manifest capabilities before it performs any host operation.
 Plugins never call Bluetooth, SQLite, files, or platform APIs directly.
 
+Current host actions:
+
+| Method | Required capability | Purpose |
+| --- | --- | --- |
+| `storage.private.put` | `storage.private` | Store plugin-private JSON. |
+| `storage.private.get` | `storage.private` | Read plugin-private JSON. |
+| `storage.private.delete` | `storage.private` | Delete one plugin-private key. |
+| `storage.private.keys` | `storage.private` | List plugin-private keys. |
+| `wave.stop` | `wave.control` | Stop Core-owned output through the attached device output controller. |
+
 An empty output is explicit:
 
 ```json

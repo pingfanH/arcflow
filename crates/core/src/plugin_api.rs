@@ -1,22 +1,41 @@
 //! Host API exposed to sandboxed plugins through Rust Core.
 
 use core::fmt;
+use std::sync::Arc;
 
 use arcflow_plugin_runtime::{Capability, PluginAction, PluginManifest, PluginOutput};
 use arcflow_storage::{Storage, StorageError};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::{DeviceId, DeviceOutputController};
+
 /// Core-owned plugin host API.
 pub struct PluginApi<'a> {
     storage: &'a Storage,
+    output_controller: Option<Arc<dyn DeviceOutputController>>,
 }
 
 impl<'a> PluginApi<'a> {
     /// Constructs a plugin API over Core-owned storage.
     #[must_use]
     pub fn new(storage: &'a Storage) -> Self {
-        Self { storage }
+        Self {
+            storage,
+            output_controller: None,
+        }
+    }
+
+    /// Constructs a plugin API over Core-owned storage and output control.
+    #[must_use]
+    pub fn with_output_controller(
+        storage: &'a Storage,
+        output_controller: Arc<dyn DeviceOutputController>,
+    ) -> Self {
+        Self {
+            storage,
+            output_controller: Some(output_controller),
+        }
     }
 
     /// Handles one action requested by a sandboxed plugin.
@@ -30,6 +49,7 @@ impl<'a> PluginApi<'a> {
             "storage.private.get" => self.storage_get(manifest, action.params),
             "storage.private.delete" => self.storage_delete(manifest, action.params),
             "storage.private.keys" => self.storage_keys(manifest),
+            "wave.stop" => self.wave_stop(manifest, action.params),
             method => Err(PluginApiError::UnknownMethod(method.to_owned())),
         }
     }
@@ -112,6 +132,30 @@ impl<'a> PluginApi<'a> {
             "keys": keys,
         }))
     }
+
+    fn wave_stop(&self, manifest: &PluginManifest, params: Value) -> Result<Value, PluginApiError> {
+        ensure_capability(manifest, Capability::WaveControl)?;
+        let params: DeviceParams = read_params("wave.stop", params)?;
+        let output_controller = self
+            .output_controller
+            .as_ref()
+            .ok_or_else(|| PluginApiError::HostUnavailable("wave.stop".to_owned()))?;
+        let device_id = DeviceId::new(params.device_id);
+        let result = output_controller
+            .stop_all_output()
+            .map_err(|error| PluginApiError::Host(error.to_string()))?;
+        let stopped = result
+            .stopped_devices
+            .iter()
+            .any(|stopped_id| stopped_id == &device_id);
+
+        Ok(json!({
+            "accepted": true,
+            "command": "wave.stop",
+            "deviceId": device_id.as_str(),
+            "stopped": stopped,
+        }))
+    }
 }
 
 /// Error returned by Core plugin API operations.
@@ -130,6 +174,10 @@ pub enum PluginApiError {
     InvalidParams(String),
     /// Core-owned storage failed.
     Storage(String),
+    /// A host surface required by the action has not been attached.
+    HostUnavailable(String),
+    /// A Core-owned host surface failed.
+    Host(String),
 }
 
 impl fmt::Display for PluginApiError {
@@ -146,6 +194,10 @@ impl fmt::Display for PluginApiError {
             Self::UnknownMethod(method) => write!(f, "unknown plugin host method `{method}`"),
             Self::InvalidParams(error) => write!(f, "invalid plugin host params: {error}"),
             Self::Storage(error) => write!(f, "plugin storage error: {error}"),
+            Self::HostUnavailable(method) => {
+                write!(f, "plugin host method `{method}` is not attached")
+            }
+            Self::Host(error) => write!(f, "plugin host error: {error}"),
         }
     }
 }
@@ -169,6 +221,12 @@ struct StoragePutParams {
 #[serde(rename_all = "camelCase")]
 struct StorageKeyParams {
     key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceParams {
+    device_id: String,
 }
 
 fn ensure_capability(
@@ -196,11 +254,44 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use arcflow_plugin_runtime::{PluginAction, RuntimeKind};
     use arcflow_storage::Storage;
     use serde_json::json;
 
     use super::*;
+
+    #[derive(Debug)]
+    struct FakeOutputController {
+        stopped_devices: Vec<DeviceId>,
+        stop_count: Mutex<usize>,
+    }
+
+    impl FakeOutputController {
+        fn new(stopped_devices: Vec<DeviceId>) -> Self {
+            Self {
+                stopped_devices,
+                stop_count: Mutex::new(0),
+            }
+        }
+    }
+
+    impl DeviceOutputController for FakeOutputController {
+        fn submit_coyote_v3_window(
+            &self,
+            _request: crate::CoyoteV3OutputRequest,
+        ) -> Result<crate::SubmitOutputResult, crate::CoreError> {
+            Err(crate::CoreError::Transport(
+                "fake output controller does not submit windows".to_owned(),
+            ))
+        }
+
+        fn stop_all_output(&self) -> Result<crate::StopOutputResult, crate::CoreError> {
+            *self.stop_count.lock().unwrap() += 1;
+            Ok(crate::StopOutputResult::new(self.stopped_devices.clone()))
+        }
+    }
 
     fn manifest_with(capabilities: Vec<Capability>) -> PluginManifest {
         PluginManifest {
@@ -337,6 +428,76 @@ mod tests {
                 plugin_id: "com.example.plugin".to_owned(),
                 capability: Capability::StoragePrivate,
             }
+        );
+    }
+
+    #[test]
+    fn stops_wave_through_output_controller() {
+        let storage = Storage::in_memory().unwrap();
+        let controller = Arc::new(FakeOutputController::new(vec![DeviceId::new("coyote-v3")]));
+        let output_controller: Arc<dyn DeviceOutputController> = controller.clone();
+        let api = PluginApi::with_output_controller(&storage, output_controller);
+        let manifest = manifest_with(vec![Capability::WaveControl]);
+
+        let result = api
+            .handle_action(
+                &manifest,
+                PluginAction::new("wave.stop", json!({ "deviceId": "coyote-v3" })),
+            )
+            .unwrap();
+
+        assert_eq!(
+            result,
+            json!({
+                "accepted": true,
+                "command": "wave.stop",
+                "deviceId": "coyote-v3",
+                "stopped": true,
+            })
+        );
+        assert_eq!(*controller.stop_count.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn rejects_wave_stop_without_capability() {
+        let storage = Storage::in_memory().unwrap();
+        let controller = Arc::new(FakeOutputController::new(vec![DeviceId::new("coyote-v3")]));
+        let output_controller: Arc<dyn DeviceOutputController> = controller;
+        let api = PluginApi::with_output_controller(&storage, output_controller);
+        let manifest = manifest_with(vec![Capability::DeviceRead]);
+
+        let error = api
+            .handle_action(
+                &manifest,
+                PluginAction::new("wave.stop", json!({ "deviceId": "coyote-v3" })),
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            PluginApiError::CapabilityDenied {
+                plugin_id: "com.example.plugin".to_owned(),
+                capability: Capability::WaveControl,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_wave_stop_without_output_controller() {
+        let storage = Storage::in_memory().unwrap();
+        let api = PluginApi::new(&storage);
+        let manifest = manifest_with(vec![Capability::WaveControl]);
+
+        let error = api
+            .handle_action(
+                &manifest,
+                PluginAction::new("wave.stop", json!({ "deviceId": "coyote-v3" })),
+            )
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            PluginApiError::HostUnavailable("wave.stop".to_owned())
         );
     }
 }
