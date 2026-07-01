@@ -36,6 +36,23 @@ impl DeviceDiscoveryController for NoopDeviceDiscoveryController {
 
 /// Output controller used by Core to stop active device sessions.
 pub trait DeviceOutputController: fmt::Debug + Send + Sync {
+    /// Marks a device as active for output writes.
+    fn attach_output_device(&self, _device_id: DeviceId) -> Result<(), CoreError> {
+        Err(CoreError::Transport(
+            "device output controller does not support device attachment".to_owned(),
+        ))
+    }
+
+    /// Removes a device from active output writes.
+    fn detach_output_device(&self, _device_id: &DeviceId) -> Result<(), CoreError> {
+        Ok(())
+    }
+
+    /// Lists devices currently active for output writes.
+    fn active_output_devices(&self) -> Vec<DeviceId> {
+        Vec::new()
+    }
+
     /// Submits one Coyote V3 wave window to the output controller.
     fn submit_coyote_v3_window(
         &self,
@@ -97,6 +114,12 @@ impl ScriptRunResult {
 pub struct NoopDeviceOutputController;
 
 impl DeviceOutputController for NoopDeviceOutputController {
+    fn attach_output_device(&self, _device_id: DeviceId) -> Result<(), CoreError> {
+        Err(CoreError::Transport(
+            "no device output controller attached".to_owned(),
+        ))
+    }
+
     fn submit_coyote_v3_window(
         &self,
         _request: CoyoteV3OutputRequest,
@@ -194,6 +217,24 @@ impl ArcFlowCore {
     /// Stops all active output sessions known by Core.
     pub fn stop_all_output(&self) -> Result<StopOutputResult, CoreError> {
         self.output_controller.stop_all_output()
+    }
+
+    /// Marks a device as active for output writes and returns all active devices.
+    pub fn attach_output_device(&self, device_id: DeviceId) -> Result<Vec<DeviceId>, CoreError> {
+        self.output_controller.attach_output_device(device_id)?;
+        Ok(self.output_controller.active_output_devices())
+    }
+
+    /// Removes a device from output writes and returns all active devices.
+    pub fn detach_output_device(&self, device_id: &DeviceId) -> Result<Vec<DeviceId>, CoreError> {
+        self.output_controller.detach_output_device(device_id)?;
+        Ok(self.output_controller.active_output_devices())
+    }
+
+    /// Lists devices currently active for output writes.
+    #[must_use]
+    pub fn active_output_devices(&self) -> Vec<DeviceId> {
+        self.output_controller.active_output_devices()
     }
 
     /// Submits one Coyote V3 output window through the active output controller.
@@ -384,6 +425,66 @@ mod tests {
         let result = core.stop_all_output().unwrap();
 
         assert_eq!(result.stopped_devices, vec![DeviceId::new("coyote-v3")]);
+    }
+
+    #[test]
+    fn output_device_activation_uses_output_controller() {
+        #[derive(Debug, Default)]
+        struct FakeOutputController {
+            active_devices: Mutex<Vec<DeviceId>>,
+        }
+
+        impl DeviceOutputController for FakeOutputController {
+            fn attach_output_device(&self, device_id: DeviceId) -> Result<(), CoreError> {
+                let mut active_devices = self.active_devices.lock().unwrap();
+                if !active_devices.contains(&device_id) {
+                    active_devices.push(device_id);
+                }
+                Ok(())
+            }
+
+            fn detach_output_device(&self, device_id: &DeviceId) -> Result<(), CoreError> {
+                self.active_devices
+                    .lock()
+                    .unwrap()
+                    .retain(|active_device_id| active_device_id != device_id);
+                Ok(())
+            }
+
+            fn active_output_devices(&self) -> Vec<DeviceId> {
+                self.active_devices.lock().unwrap().clone()
+            }
+
+            fn submit_coyote_v3_window(
+                &self,
+                request: CoyoteV3OutputRequest,
+            ) -> Result<SubmitOutputResult, CoreError> {
+                Ok(SubmitOutputResult::new(request.device_id, true))
+            }
+
+            fn stop_all_output(&self) -> Result<StopOutputResult, CoreError> {
+                Ok(StopOutputResult::new(Vec::new()))
+            }
+        }
+
+        let core = ArcFlowCore::with_output_controller(
+            SafetyLimits::conservative(),
+            Arc::new(FakeOutputController::default()),
+        );
+
+        let active_devices = core
+            .attach_output_device(DeviceId::new("coyote-v3"))
+            .unwrap();
+        assert_eq!(active_devices, vec![DeviceId::new("coyote-v3")]);
+        assert_eq!(
+            core.active_output_devices(),
+            vec![DeviceId::new("coyote-v3")]
+        );
+
+        let active_devices = core
+            .detach_output_device(&DeviceId::new("coyote-v3"))
+            .unwrap();
+        assert!(active_devices.is_empty());
     }
 
     #[tokio::test]

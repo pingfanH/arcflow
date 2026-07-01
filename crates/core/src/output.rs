@@ -85,6 +85,20 @@ impl<S> DeviceOutputController for CoyoteV3OutputController<S>
 where
     S: DeviceBleOutputSink,
 {
+    fn attach_output_device(&self, device_id: DeviceId) -> Result<(), CoreError> {
+        self.attach_device(device_id);
+        Ok(())
+    }
+
+    fn detach_output_device(&self, device_id: &DeviceId) -> Result<(), CoreError> {
+        self.detach_device(device_id);
+        Ok(())
+    }
+
+    fn active_output_devices(&self) -> Vec<DeviceId> {
+        self.active_devices()
+    }
+
     fn submit_coyote_v3_window(
         &self,
         request: CoyoteV3OutputRequest,

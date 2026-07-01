@@ -60,6 +60,9 @@ platform provider receives device-scoped write and subscription requests so the
 real desktop/mobile BLE adapter can route operations to the correct native
 connection without exposing platform routing details back to Core, React, or
 plugins.
+Core output controllers also own the active output-device set. UI, scripts,
+plugins, and external control can observe or request output activation through
+Rust APIs, but React does not maintain a parallel Bluetooth connection model.
 
 Bluetooth logic must stay in Rust. The future web target may add a separate Web
 Bluetooth implementation, but desktop and mobile use Tauri 2 and Rust.
