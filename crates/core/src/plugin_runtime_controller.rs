@@ -591,6 +591,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn javascript_hook_outputs_route_through_plugin_api() {
+        let bundle_root = test_bundle_root("plugin-runtime-controller-js-output");
+        fs::create_dir_all(bundle_root.join("dist")).unwrap();
+        fs::write(
+            bundle_root.join("dist/plugin.js"),
+            br#"export const arcflowPlugin = {
+                "hooks": {
+                    "device.connected": {
+                        "actions": [
+                            {
+                                "method": "storage.private.put",
+                                "params": {
+                                    "key": "lastDevice",
+                                    "value": {"deviceId": "coyote-v3"}
+                                }
+                            }
+                        ]
+                    }
+                }
+            };"#,
+        )
+        .unwrap();
+        let mut registry = PluginRegistry::new();
+        registry
+            .install_with_bundle_root(
+                manifest_with_capabilities(
+                    "plugin.js",
+                    RuntimeKind::JavaScript,
+                    vec![Capability::StoragePrivate],
+                ),
+                bundle_root.display().to_string(),
+            )
+            .unwrap();
+        registry.enable("plugin.js").unwrap();
+        let storage = Arc::new(Mutex::new(Storage::in_memory().unwrap()));
+        let discovery_controller: Arc<dyn DeviceDiscoveryController> =
+            Arc::new(FakeDiscoveryController::default());
+        let output_controller: Arc<dyn DeviceOutputController> = Arc::new(FakeOutputController {
+            stop_count: Mutex::new(0),
+        });
+        let mut controller = RecordingPluginRuntimeController::new();
+        controller.sync_from_registry(&registry).await.unwrap();
+        let controller = Arc::new(AsyncMutex::new(controller));
+        let invoker = RecordingPluginRuntimeHookInvoker::with_plugin_api(
+            controller,
+            Arc::clone(&storage),
+            discovery_controller,
+            output_controller,
+        );
+
+        invoker
+            .invoke_plugin_hook(
+                "plugin.js",
+                "device.connected",
+                &json!({ "deviceId": "coyote-v3" }),
+            )
+            .await
+            .unwrap();
+
+        let stored = storage
+            .lock()
+            .unwrap()
+            .plugin_kv()
+            .get("plugin.js", "lastDevice")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&stored).unwrap(),
+            json!({ "deviceId": "coyote-v3" })
+        );
+
+        fs::remove_dir_all(bundle_root).unwrap();
+    }
+
+    #[tokio::test]
     async fn sync_rejects_invalid_javascript_bundle_entry() {
         let bundle_root = test_bundle_root("plugin-runtime-controller-js-invalid");
         fs::create_dir_all(bundle_root.join("dist")).unwrap();

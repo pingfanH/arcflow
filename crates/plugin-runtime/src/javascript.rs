@@ -1,23 +1,32 @@
 //! JavaScript runtime adapter scaffolding.
 
-use std::fs;
+use std::{
+    collections::BTreeMap,
+    fs,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
+use serde::Deserialize;
 
 use crate::{
     PluginInvocation, PluginLoadRequest, PluginOutput, RecordedPlugin, RecordingRuntimeAdapter,
     RecordingRuntimeSnapshot, RuntimeAdapter, RuntimeError, RuntimeHandle, RuntimeKind,
 };
 
+const ARCFLOW_PLUGIN_EXPORT: &str = "export const arcflowPlugin =";
+
 /// JavaScript runtime adapter that validates bundle entry text before recording lifecycle.
 ///
 /// Bundle-backed plugins are read from disk and validated as non-empty UTF-8
-/// JavaScript modules. Manifest-only plugins still use recording lifecycle so
-/// development and registry management can proceed before a bundle has been
-/// attached. This adapter does not execute JavaScript exports yet.
+/// JavaScript modules. If a bundle exports an `arcflowPlugin` JSON object, the
+/// adapter returns matching hook output envelopes from that declaration.
+/// Manifest-only plugins still use recording lifecycle so development and
+/// registry management can proceed before a bundle has been attached.
 #[derive(Debug, Clone)]
 pub struct JavaScriptValidationRuntimeAdapter {
     recorder: RecordingRuntimeAdapter,
+    definitions: Arc<Mutex<BTreeMap<String, JavaScriptPluginDefinition>>>,
 }
 
 impl JavaScriptValidationRuntimeAdapter {
@@ -26,6 +35,7 @@ impl JavaScriptValidationRuntimeAdapter {
     pub fn new() -> Self {
         Self {
             recorder: RecordingRuntimeAdapter::javascript(),
+            definitions: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -59,6 +69,7 @@ impl RuntimeAdapter for JavaScriptValidationRuntimeAdapter {
             )));
         }
 
+        let mut definition = None;
         if let Some(entry_path) = request.resolved_entry_path() {
             let bytes = fs::read(&entry_path).map_err(|error| {
                 RuntimeError::Runtime(format!(
@@ -81,9 +92,19 @@ impl RuntimeAdapter for JavaScriptValidationRuntimeAdapter {
                     manifest.id
                 )));
             }
+
+            definition = parse_arcflow_plugin_definition(&source)?;
         }
 
-        self.recorder.load(request).await
+        let handle = self.recorder.load(request).await?;
+        if let Some(definition) = definition {
+            self.definitions
+                .lock()
+                .expect("javascript plugin definition mutex poisoned")
+                .insert(manifest.id.clone(), definition);
+        }
+
+        Ok(handle)
     }
 
     async fn invoke(
@@ -91,12 +112,96 @@ impl RuntimeAdapter for JavaScriptValidationRuntimeAdapter {
         handle: &RuntimeHandle,
         invocation: PluginInvocation,
     ) -> Result<PluginOutput, RuntimeError> {
-        self.recorder.invoke(handle, invocation).await
+        let hook = invocation.hook.clone();
+        let recorded_output = self.recorder.invoke(handle, invocation).await?;
+
+        Ok(self
+            .definitions
+            .lock()
+            .expect("javascript plugin definition mutex poisoned")
+            .get(handle.plugin_id())
+            .and_then(|definition| definition.hooks.get(&hook).cloned())
+            .unwrap_or(recorded_output))
     }
 
     async fn unload(&self, handle: RuntimeHandle) -> Result<(), RuntimeError> {
-        self.recorder.unload(handle).await
+        let plugin_id = handle.plugin_id().to_owned();
+        self.recorder.unload(handle).await?;
+        self.definitions
+            .lock()
+            .expect("javascript plugin definition mutex poisoned")
+            .remove(&plugin_id);
+        Ok(())
     }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct JavaScriptPluginDefinition {
+    #[serde(default)]
+    hooks: BTreeMap<String, PluginOutput>,
+}
+
+fn parse_arcflow_plugin_definition(
+    source: &str,
+) -> Result<Option<JavaScriptPluginDefinition>, RuntimeError> {
+    let Some(export_start) = source.find(ARCFLOW_PLUGIN_EXPORT) else {
+        return Ok(None);
+    };
+
+    let object_start = export_start
+        + ARCFLOW_PLUGIN_EXPORT.len()
+        + source[export_start + ARCFLOW_PLUGIN_EXPORT.len()..]
+            .find('{')
+            .ok_or_else(|| {
+                RuntimeError::Runtime(
+                    "javascript arcflowPlugin export must be assigned a JSON object".to_owned(),
+                )
+            })?;
+    let object_end = matching_json_object_end(source, object_start)?;
+    let object_source = &source[object_start..object_end];
+
+    serde_json::from_str(object_source)
+        .map(Some)
+        .map_err(|error| {
+            RuntimeError::Runtime(format!(
+                "javascript arcflowPlugin export is not valid JSON: {error}"
+            ))
+        })
+}
+
+fn matching_json_object_end(source: &str, object_start: usize) -> Result<usize, RuntimeError> {
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (offset, character) in source[object_start..].char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match character {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(object_start + offset + character.len_utf8());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Err(RuntimeError::Runtime(
+        "javascript arcflowPlugin export has an unterminated JSON object".to_owned(),
+    ))
 }
 
 #[cfg(test)]
@@ -108,7 +213,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::{Capability, PluginManifest};
+    use serde_json::json;
+
+    use crate::{Capability, PluginAction, PluginManifest};
 
     fn manifest(runtime: RuntimeKind, entry: &str) -> PluginManifest {
         PluginManifest {
@@ -154,6 +261,100 @@ mod tests {
             runtime.loaded_plugins()[0].bundle_root,
             request.bundle_root().map(str::to_owned)
         );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn invokes_declared_javascript_hook_output() {
+        let root = write_bundle(
+            "declared-output",
+            "dist/plugin.js",
+            br#"export const arcflowPlugin = {
+                "hooks": {
+                    "device.connected": {
+                        "actions": [
+                            {
+                                "method": "storage.private.put",
+                                "params": {
+                                    "key": "lastDevice",
+                                    "value": {"deviceId": "coyote-v3"}
+                                }
+                            }
+                        ]
+                    }
+                }
+            };"#,
+        );
+        let runtime = JavaScriptValidationRuntimeAdapter::new();
+        let request = PluginLoadRequest::with_bundle_root(
+            manifest(RuntimeKind::JavaScript, "dist/plugin.js"),
+            root.display().to_string(),
+        );
+        let handle = runtime.load(&request).await.unwrap();
+
+        let output = runtime
+            .invoke(
+                &handle,
+                PluginInvocation::new("device.connected", json!({ "deviceId": "coyote-v3" })),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            output,
+            PluginOutput::new(vec![PluginAction::new(
+                "storage.private.put",
+                json!({
+                    "key": "lastDevice",
+                    "value": {"deviceId": "coyote-v3"}
+                })
+            )])
+        );
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn returns_empty_output_for_undeclared_javascript_hook() {
+        let root = write_bundle(
+            "undeclared-output",
+            "dist/plugin.js",
+            br#"export const arcflowPlugin = {"hooks": {}};"#,
+        );
+        let runtime = JavaScriptValidationRuntimeAdapter::new();
+        let request = PluginLoadRequest::with_bundle_root(
+            manifest(RuntimeKind::JavaScript, "dist/plugin.js"),
+            root.display().to_string(),
+        );
+        let handle = runtime.load(&request).await.unwrap();
+
+        let output = runtime
+            .invoke(&handle, PluginInvocation::new("missing", json!({})))
+            .await
+            .unwrap();
+
+        assert_eq!(output, PluginOutput::default());
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_javascript_plugin_definition() {
+        let root = write_bundle(
+            "invalid-output",
+            "dist/plugin.js",
+            br#"export const arcflowPlugin = { hooks: {} };"#,
+        );
+        let runtime = JavaScriptValidationRuntimeAdapter::new();
+        let request = PluginLoadRequest::with_bundle_root(
+            manifest(RuntimeKind::JavaScript, "dist/plugin.js"),
+            root.display().to_string(),
+        );
+
+        let error = runtime.load(&request).await.unwrap_err();
+
+        assert!(error.to_string().contains("not valid JSON"));
 
         fs::remove_dir_all(root).unwrap();
     }

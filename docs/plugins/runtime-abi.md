@@ -9,8 +9,34 @@ file from that context, but plugin code only receives invocation envelopes.
 The current validation adapters check bundle-backed entries before recording
 lifecycle state: WASM entries must parse as WebAssembly modules, and JavaScript
 entries must be non-empty UTF-8 module source. Manifest-only plugins still use
-recording lifecycle for development; the execution call convention is still
-being wired behind the same ABI.
+recording lifecycle for development.
+
+Bundle-backed JavaScript plugins may export a declarative `arcflowPlugin` JSON
+object. This keeps early plugins sandboxed and deterministic while the real JS
+engine call convention is attached behind the same runtime boundary:
+
+```js
+export const arcflowPlugin = {
+  "hooks": {
+    "device.connected": {
+      "actions": [
+        {
+          "method": "storage.private.put",
+          "params": {
+            "key": "lastDevice",
+            "value": {
+              "deviceId": "coyote-v3"
+            }
+          }
+        }
+      ]
+    }
+  }
+};
+```
+
+Hook names in `hooks` map to the same `PluginOutput` envelope described below.
+Hooks not listed in the object return an explicit empty output.
 
 ## Invocation
 
