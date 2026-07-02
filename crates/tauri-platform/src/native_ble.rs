@@ -1,18 +1,26 @@
 //! Native desktop BLE provider backed by `btleplug`.
 
-use std::{collections::HashMap, sync::Mutex as StdMutex, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex as StdMutex},
+    time::Duration,
+};
 
 use arcflow_core::{
     bluetooth_base_uuid, BleAdvertisement, BleCharacteristic, CoreError, DeviceId,
     COYOTE_V2_SERVICE_UUID, COYOTE_V3_SERVICE_UUID,
 };
-use arcflow_protocol::coyote::{V2_DEVICE_NAME, V3_DEVICE_NAME};
+use arcflow_protocol::coyote::{v3::B1Notification, BatteryLevel, V2_DEVICE_NAME, V3_DEVICE_NAME};
 use async_trait::async_trait;
 use btleplug::{
-    api::{Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType},
+    api::{
+        Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, ValueNotification,
+        WriteType,
+    },
     platform::{Adapter, Manager, Peripheral},
 };
-use tokio::{sync::Mutex, time::sleep};
+use futures_util::StreamExt;
+use tokio::{sync::Mutex, task::JoinHandle, time::sleep};
 use uuid::Uuid;
 
 use crate::{
@@ -29,11 +37,20 @@ struct NativeBleAdvertisementScan {
     diagnostics: TauriBleScanDiagnostics,
 }
 
+#[derive(Debug, Clone, Default)]
+struct NativeBleNotificationStatus {
+    battery_percent: Option<u8>,
+    channel_a_strength: Option<u8>,
+    channel_b_strength: Option<u8>,
+}
+
 /// Desktop BLE provider used by Tauri shells on platforms supported by `btleplug`.
 #[derive(Debug)]
 pub struct NativeBlePlatformProvider {
     scan_duration: Duration,
     connections: Mutex<HashMap<DeviceId, Peripheral>>,
+    notification_tasks: Mutex<HashMap<DeviceId, JoinHandle<()>>>,
+    notification_status: Arc<StdMutex<HashMap<DeviceId, NativeBleNotificationStatus>>>,
     scan_diagnostics: StdMutex<Option<TauriBleScanDiagnostics>>,
 }
 
@@ -44,6 +61,8 @@ impl NativeBlePlatformProvider {
         Self {
             scan_duration: DEFAULT_SCAN_DURATION,
             connections: Mutex::new(HashMap::new()),
+            notification_tasks: Mutex::new(HashMap::new()),
+            notification_status: Arc::new(StdMutex::new(HashMap::new())),
             scan_diagnostics: StdMutex::new(None),
         }
     }
@@ -54,6 +73,8 @@ impl NativeBlePlatformProvider {
         Self {
             scan_duration,
             connections: Mutex::new(HashMap::new()),
+            notification_tasks: Mutex::new(HashMap::new()),
+            notification_status: Arc::new(StdMutex::new(HashMap::new())),
             scan_diagnostics: StdMutex::new(None),
         }
     }
@@ -147,6 +168,7 @@ impl NativeBlePlatformProvider {
             };
             diagnostics.record_matched(properties.local_name.as_deref(), &service_uuids);
 
+            let device_id = DeviceId::new(peripheral.id().to_string());
             let connected = peripheral.is_connected().await.unwrap_or(false);
             let battery_percent = if connected {
                 peripheral
@@ -157,16 +179,21 @@ impl NativeBlePlatformProvider {
             } else {
                 None
             };
+            let notification_status = self.notification_status_for_device(&device_id);
 
             advertisements.push(
                 BleAdvertisement::new(
-                    DeviceId::new(peripheral.id().to_string()),
+                    device_id,
                     properties.local_name,
                     properties.rssi,
                     service_uuids,
                 )
                 .with_connected(connected)
-                .with_battery_percent(battery_percent),
+                .with_battery_percent(battery_percent.or(notification_status.battery_percent))
+                .with_channel_strengths(
+                    notification_status.channel_a_strength,
+                    notification_status.channel_b_strength,
+                ),
             );
         }
 
@@ -174,6 +201,15 @@ impl NativeBlePlatformProvider {
             advertisements,
             diagnostics,
         })
+    }
+
+    fn notification_status_for_device(&self, device_id: &DeviceId) -> NativeBleNotificationStatus {
+        self.notification_status
+            .lock()
+            .expect("native BLE notification status mutex poisoned")
+            .get(device_id)
+            .cloned()
+            .unwrap_or_default()
     }
 
     async fn ensure_connected(&self, device_id: &DeviceId) -> Result<Peripheral, CoreError> {
@@ -222,6 +258,47 @@ impl NativeBlePlatformProvider {
             .subscribe(&characteristic)
             .await
             .map_err(transport_error)
+    }
+
+    async fn ensure_notification_listener(
+        &self,
+        device_id: DeviceId,
+        peripheral: Peripheral,
+    ) -> Result<(), CoreError> {
+        let mut tasks = self.notification_tasks.lock().await;
+        if tasks
+            .get(&device_id)
+            .is_some_and(|handle| !handle.is_finished())
+        {
+            return Ok(());
+        }
+
+        if let Some(handle) = tasks.remove(&device_id) {
+            handle.abort();
+        }
+
+        let mut notifications = peripheral.notifications().await.map_err(transport_error)?;
+        let status_cache = Arc::clone(&self.notification_status);
+        let task_device_id = device_id.clone();
+        let handle = tokio::spawn(async move {
+            while let Some(notification) = notifications.next().await {
+                update_notification_status(&status_cache, &task_device_id, notification);
+            }
+        });
+
+        tasks.insert(device_id, handle);
+        Ok(())
+    }
+
+    async fn stop_notification_listener(&self, device_id: &DeviceId) {
+        if let Some(handle) = self.notification_tasks.lock().await.remove(device_id) {
+            handle.abort();
+        }
+
+        self.notification_status
+            .lock()
+            .expect("native BLE notification status mutex poisoned")
+            .remove(device_id);
     }
 }
 
@@ -324,12 +401,15 @@ impl TauriBlePlatformProvider for NativeBlePlatformProvider {
             .await?;
         self.subscribe_if_present(&peripheral, BleCharacteristic::CoyoteBattery)
             .await?;
+        self.ensure_notification_listener(device_id.clone(), peripheral.clone())
+            .await?;
         let battery_percent = self.read_battery_from_peripheral(&peripheral).await?;
 
         Ok(TauriBleConnectionState::new(device_id, battery_percent))
     }
 
     async fn disconnect_device(&self, device_id: &DeviceId) -> Result<(), CoreError> {
+        self.stop_notification_listener(device_id).await;
         let peripheral = self.connections.lock().await.remove(device_id);
 
         if let Some(peripheral) = peripheral {
@@ -350,7 +430,11 @@ impl TauriBlePlatformProvider for NativeBlePlatformProvider {
 
     async fn read_battery_percent(&self, device_id: &DeviceId) -> Result<Option<u8>, CoreError> {
         let peripheral = self.ensure_connected(device_id).await?;
-        self.read_battery_from_peripheral(&peripheral).await
+        let battery_percent = self.read_battery_from_peripheral(&peripheral).await?;
+        Ok(battery_percent.or_else(|| {
+            self.notification_status_for_device(device_id)
+                .battery_percent
+        }))
     }
 }
 
@@ -363,6 +447,52 @@ fn find_characteristic(
         .characteristics()
         .into_iter()
         .find(|candidate| candidate.uuid == uuid)
+}
+
+fn update_notification_status(
+    status_cache: &StdMutex<HashMap<DeviceId, NativeBleNotificationStatus>>,
+    device_id: &DeviceId,
+    notification: ValueNotification,
+) {
+    let Some(characteristic) = ble_characteristic_from_uuid(notification.uuid) else {
+        return;
+    };
+
+    let mut statuses = status_cache
+        .lock()
+        .expect("native BLE notification status mutex poisoned");
+    let status = statuses.entry(device_id.clone()).or_default();
+
+    match characteristic {
+        BleCharacteristic::CoyoteV3Notify => {
+            if let Ok(notification) = B1Notification::from_bytes(&notification.value) {
+                status.channel_a_strength = Some(notification.a_strength());
+                status.channel_b_strength = Some(notification.b_strength());
+            }
+        }
+        BleCharacteristic::CoyoteBattery => {
+            if let Ok(battery) = BatteryLevel::from_bytes(&notification.value) {
+                status.battery_percent = Some(battery.percent());
+            }
+        }
+        _ => {}
+    }
+}
+
+fn ble_characteristic_from_uuid(uuid: Uuid) -> Option<BleCharacteristic> {
+    [
+        BleCharacteristic::CoyoteV3Write,
+        BleCharacteristic::CoyoteV3Notify,
+        BleCharacteristic::CoyoteBattery,
+        BleCharacteristic::CoyoteV2PwmAb2,
+        BleCharacteristic::CoyoteV2PwmA34,
+        BleCharacteristic::CoyoteV2PwmB34,
+    ]
+    .into_iter()
+    .find(|characteristic| {
+        Uuid::parse_str(&characteristic.uuid())
+            .is_ok_and(|characteristic_uuid| characteristic_uuid == uuid)
+    })
 }
 
 fn short_uuid(uuid: &Uuid) -> Option<u16> {
@@ -504,6 +634,45 @@ mod tests {
                 bluetooth_service_uuid(COYOTE_V3_SERVICE_UUID)
             ]
         );
+    }
+
+    #[test]
+    fn maps_known_characteristic_uuids() {
+        let uuid = Uuid::parse_str(&BleCharacteristic::CoyoteV3Notify.uuid()).unwrap();
+
+        assert_eq!(
+            ble_characteristic_from_uuid(uuid),
+            Some(BleCharacteristic::CoyoteV3Notify)
+        );
+    }
+
+    #[test]
+    fn notification_status_caches_strength_and_battery() {
+        let cache = StdMutex::new(HashMap::new());
+        let device_id = DeviceId::new("coyote-v3");
+
+        update_notification_status(
+            &cache,
+            &device_id,
+            ValueNotification {
+                uuid: Uuid::parse_str(&BleCharacteristic::CoyoteV3Notify.uuid()).unwrap(),
+                value: vec![0xB1, 0x01, 12, 4],
+            },
+        );
+        update_notification_status(
+            &cache,
+            &device_id,
+            ValueNotification {
+                uuid: Uuid::parse_str(&BleCharacteristic::CoyoteBattery.uuid()).unwrap(),
+                value: vec![88],
+            },
+        );
+
+        let statuses = cache.lock().unwrap();
+        let status = statuses.get(&device_id).unwrap();
+        assert_eq!(status.channel_a_strength, Some(12));
+        assert_eq!(status.channel_b_strength, Some(4));
+        assert_eq!(status.battery_percent, Some(88));
     }
 
     #[test]

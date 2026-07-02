@@ -96,6 +96,10 @@ pub struct BleAdvertisement {
     pub service_uuids: Vec<u16>,
     /// Battery percentage if the platform already knows it.
     pub battery_percent: Option<u8>,
+    /// Latest reported Coyote channel A strength if the platform already knows it.
+    pub channel_a_strength: Option<u8>,
+    /// Latest reported Coyote channel B strength if the platform already knows it.
+    pub channel_b_strength: Option<u8>,
     /// Whether the platform reports an active BLE connection.
     pub connected: bool,
 }
@@ -115,6 +119,8 @@ impl BleAdvertisement {
             rssi,
             service_uuids,
             battery_percent: None,
+            channel_a_strength: None,
+            channel_b_strength: None,
             connected: true,
         }
     }
@@ -123,6 +129,18 @@ impl BleAdvertisement {
     #[must_use]
     pub fn with_battery_percent(mut self, battery_percent: Option<u8>) -> Self {
         self.battery_percent = battery_percent;
+        self
+    }
+
+    /// Returns the advertisement with platform-known channel strengths.
+    #[must_use]
+    pub fn with_channel_strengths(
+        mut self,
+        channel_a_strength: Option<u8>,
+        channel_b_strength: Option<u8>,
+    ) -> Self {
+        self.channel_a_strength = channel_a_strength;
+        self.channel_b_strength = channel_b_strength;
         self
     }
 
@@ -207,6 +225,8 @@ fn device_status_from_advertisement(advertisement: BleAdvertisement) -> Option<D
         id: advertisement.device_id,
         model,
         battery_percent: advertisement.battery_percent,
+        channel_a_strength: advertisement.channel_a_strength,
+        channel_b_strength: advertisement.channel_b_strength,
         connected: advertisement.connected,
     })
 }
@@ -343,6 +363,7 @@ mod tests {
                     vec![COYOTE_V3_SERVICE_UUID],
                 )
                 .with_battery_percent(Some(87))
+                .with_channel_strengths(Some(12), Some(4))
                 .with_connected(false),
                 BleAdvertisement::new(
                     DeviceId::new("v2"),
@@ -369,12 +390,16 @@ mod tests {
                     id: DeviceId::new("v3"),
                     model: DeviceModel::CoyoteV3,
                     battery_percent: Some(87),
+                    channel_a_strength: Some(12),
+                    channel_b_strength: Some(4),
                     connected: false,
                 },
                 DeviceStatus {
                     id: DeviceId::new("v2"),
                     model: DeviceModel::CoyoteV2,
                     battery_percent: None,
+                    channel_a_strength: None,
+                    channel_b_strength: None,
                     connected: true,
                 },
             ]

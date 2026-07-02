@@ -10,12 +10,13 @@ arcflow-core.workspace = true
 arcflow-protocol.workspace = true
 async-trait.workspace = true
 btleplug = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 tokio.workspace = true
 uuid = { workspace = true, optional = true }
 
 [features]
 default = []
-native-ble = ["btleplug", "uuid"]
+native-ble = ["btleplug", "futures-util", "uuid"]
 
 [lib]
 path = "src/lib.rs"

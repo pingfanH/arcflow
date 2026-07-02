@@ -399,6 +399,8 @@ mod tests {
                     id: DeviceId::new("coyote-v3"),
                     model: DeviceModel::CoyoteV3,
                     battery_percent: Some(90),
+                    channel_a_strength: None,
+                    channel_b_strength: None,
                     connected: true,
                 }],
             ))

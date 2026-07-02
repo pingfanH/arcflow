@@ -152,6 +152,7 @@ dependencies = [
  "arcflow-protocol",
  "async-trait",
  "btleplug",
+ "futures-util",
  "tokio",
  "uuid",
 ]

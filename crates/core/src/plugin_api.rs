@@ -422,6 +422,8 @@ fn device_status_payload(device: &DeviceStatus, adapter_status: BleAdapterStatus
         "connected": device.connected,
         "adapterStatus": adapter_status.as_str(),
         "batteryPercent": device.battery_percent,
+        "channelAStrength": device.channel_a_strength,
+        "channelBStrength": device.channel_b_strength,
     })
 }
 
@@ -438,6 +440,8 @@ fn device_scan_item_payload(device: &DeviceStatus) -> Value {
         "model": device_model_name(&device.model),
         "connected": device.connected,
         "batteryPercent": device.battery_percent,
+        "channelAStrength": device.channel_a_strength,
+        "channelBStrength": device.channel_b_strength,
     })
 }
 
@@ -708,6 +712,8 @@ mod tests {
                 id: DeviceId::new("coyote-v3"),
                 model: crate::DeviceModel::CoyoteV3,
                 battery_percent: Some(87),
+                channel_a_strength: None,
+                channel_b_strength: None,
                 connected: true,
             }],
         )));
@@ -730,6 +736,8 @@ mod tests {
                 "connected": true,
                 "adapterStatus": "ready",
                 "batteryPercent": 87,
+                "channelAStrength": null,
+                "channelBStrength": null,
             })
         );
         assert_eq!(*discovery.scan_count.lock().unwrap(), 1);
@@ -744,6 +752,8 @@ mod tests {
                 id: DeviceId::new("coyote-v3"),
                 model: crate::DeviceModel::CoyoteV3,
                 battery_percent: Some(87),
+                channel_a_strength: None,
+                channel_b_strength: None,
                 connected: true,
             }],
         )));
@@ -766,6 +776,8 @@ mod tests {
                         "model": "coyoteV3",
                         "connected": true,
                         "batteryPercent": 87,
+                        "channelAStrength": null,
+                        "channelBStrength": null,
                     }
                 ],
             })

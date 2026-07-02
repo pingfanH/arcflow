@@ -51,6 +51,8 @@ type DeviceSummary = {
   id: string;
   model: string;
   batteryPercent: number | null;
+  channelAStrength: number | null;
+  channelBStrength: number | null;
   connected: boolean;
 };
 
@@ -1148,6 +1150,9 @@ function DeviceList({
         const outputActive = activeOutputDeviceIds.includes(device.id);
         const supportsOutput = device.connected && device.model === "coyoteV3";
         const busy = busyDeviceId === device.id;
+        const statusDetail = [device.id, batteryLabel(device.batteryPercent), strengthLabel(device)]
+          .filter(Boolean)
+          .join(" - ");
         const actionTitle = !device.connected
           ? "Connect device"
           : outputActive
@@ -1180,9 +1185,7 @@ function DeviceList({
                   {outputActive ? "Output" : device.connected ? "Ready" : "Offline"}
                 </span>
               </div>
-              <div className="truncate text-xs text-zinc-500">
-                {device.id} - {batteryLabel(device.batteryPercent)}
-              </div>
+              <div className="truncate text-xs text-zinc-500">{statusDetail}</div>
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <button
@@ -1250,6 +1253,14 @@ function deviceModelLabel(model: string) {
 
 function batteryLabel(percent: number | null) {
   return percent === null ? "Battery --" : `Battery ${percent}%`;
+}
+
+function strengthLabel(device: DeviceSummary) {
+  if (device.channelAStrength === null && device.channelBStrength === null) {
+    return null;
+  }
+
+  return `A ${device.channelAStrength ?? "--"} / B ${device.channelBStrength ?? "--"}`;
 }
 
 function adapterStatusLabel(status: string) {

@@ -233,6 +233,8 @@ struct DeviceResponse {
     id: String,
     model: String,
     battery_percent: Option<u8>,
+    channel_a_strength: Option<u8>,
+    channel_b_strength: Option<u8>,
     connected: bool,
 }
 
@@ -2186,6 +2188,8 @@ fn device_response(device: DeviceStatus) -> DeviceResponse {
         id: device.id.as_str().to_owned(),
         model: device_model_name(&device.model),
         battery_percent: device.battery_percent,
+        channel_a_strength: device.channel_a_strength,
+        channel_b_strength: device.channel_b_strength,
         connected: device.connected,
     }
 }
@@ -2855,6 +2859,14 @@ mod tests {
         assert_eq!(response["adapterStatus"], "ready");
         assert_eq!(response["devices"][0]["id"], "coyote-v3");
         assert_eq!(response["devices"][0]["connected"], false);
+        assert_eq!(
+            response["devices"][0]["channelAStrength"],
+            serde_json::Value::Null
+        );
+        assert_eq!(
+            response["devices"][0]["channelBStrength"],
+            serde_json::Value::Null
+        );
         assert_eq!(response["diagnostics"]["scanAttempts"], 1);
         assert_eq!(response["diagnostics"]["discoveredPeripherals"], 1);
         assert_eq!(response["diagnostics"]["matchedAdvertisements"], 1);
@@ -3236,24 +3248,32 @@ mod tests {
                     id: DeviceId::new("kept-v3"),
                     model: DeviceModel::CoyoteV3,
                     battery_percent: None,
+                    channel_a_strength: None,
+                    channel_b_strength: None,
                     connected: true,
                 },
                 DeviceStatus {
                     id: DeviceId::new("new-v3"),
                     model: DeviceModel::CoyoteV3,
                     battery_percent: None,
+                    channel_a_strength: None,
+                    channel_b_strength: None,
                     connected: true,
                 },
                 DeviceStatus {
                     id: DeviceId::new("ignored-v2"),
                     model: DeviceModel::CoyoteV2,
                     battery_percent: None,
+                    channel_a_strength: None,
+                    channel_b_strength: None,
                     connected: true,
                 },
                 DeviceStatus {
                     id: DeviceId::new("ignored-disconnected-v3"),
                     model: DeviceModel::CoyoteV3,
                     battery_percent: None,
+                    channel_a_strength: None,
+                    channel_b_strength: None,
                     connected: false,
                 },
             ],

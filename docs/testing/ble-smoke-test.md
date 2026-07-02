@@ -15,6 +15,8 @@ Covered:
   when the operating system does not expose service UUIDs during advertising.
 - Device connection from the shared React device page.
 - Battery percentage read after connection.
+- Latest Coyote V3 channel strength values from subscribed notifications when
+  the device reports them.
 - Output activation and conservative A/B channel strength preview.
 - Stop output.
 - Device disconnect through Rust-owned BLE provider.
@@ -24,7 +26,6 @@ Not covered yet:
 - Mobile BLE backend.
 - Long-running playback stability.
 - Reconnect recovery after the device is powered off mid-session.
-- Real notification stream persistence beyond subscription setup.
 
 ## Preconditions
 
@@ -120,6 +121,8 @@ The app should open a desktop window and show the Device workspace.
    - Runtime events include `wave.preview.updated`.
    - Later preview windows use the new channel strengths without restarting the
      preview session.
+   - When Coyote V3 B1 notifications arrive, the device row can show the latest
+     `A N / B N` channel-strength feedback.
 
 9. Click `Stop`.
 

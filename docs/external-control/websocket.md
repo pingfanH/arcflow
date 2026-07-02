@@ -128,6 +128,8 @@ Example result:
       "id": "coyote-v3",
       "model": "coyoteV3",
       "batteryPercent": null,
+      "channelAStrength": null,
+      "channelBStrength": null,
       "connected": false
     }
   ],

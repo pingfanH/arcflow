@@ -50,6 +50,10 @@ pub struct DeviceStatus {
     pub model: DeviceModel,
     /// Battery percentage if known.
     pub battery_percent: Option<u8>,
+    /// Latest reported Coyote channel A strength if known.
+    pub channel_a_strength: Option<u8>,
+    /// Latest reported Coyote channel B strength if known.
+    pub channel_b_strength: Option<u8>,
     /// Whether the device is currently connected.
     pub connected: bool,
 }
