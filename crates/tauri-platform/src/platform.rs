@@ -15,6 +15,8 @@ const BLE_SCAN_SAMPLE_LIMIT: usize = 5;
 /// Summary of the most recent platform BLE scan.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TauriBleScanDiagnostics {
+    /// Number of platform scan attempts represented by this snapshot.
+    pub scan_attempts: usize,
     /// Number of peripherals returned by the platform adapter.
     pub discovered_peripherals: usize,
     /// Number of peripherals whose properties were readable.
@@ -37,6 +39,7 @@ impl TauriBleScanDiagnostics {
     #[must_use]
     pub fn new(discovered_peripherals: usize) -> Self {
         Self {
+            scan_attempts: 1,
             discovered_peripherals,
             ..Self::default()
         }
@@ -62,6 +65,7 @@ impl TauriBleScanDiagnostics {
 
     /// Merges another scan diagnostic snapshot into this one.
     pub fn merge(&mut self, other: Self) {
+        self.scan_attempts += other.scan_attempts;
         self.discovered_peripherals += other.discovered_peripherals;
         self.inspected_peripherals += other.inspected_peripherals;
         self.matched_advertisements += other.matched_advertisements;
@@ -286,6 +290,7 @@ mod tests {
         }
 
         assert_eq!(diagnostics.discovered_peripherals, 8);
+        assert_eq!(diagnostics.scan_attempts, 1);
         assert_eq!(diagnostics.skipped_unknown_peripherals, 8);
         assert_eq!(diagnostics.skipped_unknown_samples.len(), 5);
     }
@@ -304,6 +309,7 @@ mod tests {
         primary.merge(fallback);
 
         assert_eq!(primary.discovered_peripherals, 10);
+        assert_eq!(primary.scan_attempts, 2);
         assert_eq!(primary.matched_advertisements, 9);
         assert_eq!(primary.skipped_missing_properties, 1);
         assert_eq!(primary.matched_samples.len(), 5);

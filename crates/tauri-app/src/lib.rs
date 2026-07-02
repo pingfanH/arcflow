@@ -239,6 +239,7 @@ struct DeviceResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DeviceScanDiagnosticsResponse {
+    scan_attempts: usize,
     discovered_peripherals: usize,
     inspected_peripherals: usize,
     matched_advertisements: usize,
@@ -1929,7 +1930,8 @@ fn log_ble_scan_diagnostics(runtime: &RuntimeState, diagnostics: Option<&TauriBl
 
 fn ble_scan_diagnostics_message(diagnostics: &TauriBleScanDiagnostics) -> String {
     let mut message = format!(
-        "native BLE scan saw {} peripherals, inspected {}, matched {}, skipped unknown {}, missing properties {}",
+        "native BLE scan tried {} time(s), saw {} peripherals, inspected {}, matched {}, skipped unknown {}, missing properties {}",
+        diagnostics.scan_attempts,
         diagnostics.discovered_peripherals,
         diagnostics.inspected_peripherals,
         diagnostics.matched_advertisements,
@@ -2146,6 +2148,7 @@ fn device_scan_diagnostics_response(
 ) -> DeviceScanDiagnosticsResponse {
     let message = ble_scan_diagnostics_message(&diagnostics);
     DeviceScanDiagnosticsResponse {
+        scan_attempts: diagnostics.scan_attempts,
         discovered_peripherals: diagnostics.discovered_peripherals,
         inspected_peripherals: diagnostics.inspected_peripherals,
         matched_advertisements: diagnostics.matched_advertisements,
@@ -2627,6 +2630,7 @@ mod tests {
 
         let message = ble_scan_diagnostics_message(&diagnostics);
 
+        assert!(message.contains("tried 1 time(s)"));
         assert!(message.contains("saw 3 peripherals"));
         assert!(message.contains("inspected 2"));
         assert!(message.contains("matched 1"));
@@ -2851,6 +2855,7 @@ mod tests {
         assert_eq!(response["adapterStatus"], "ready");
         assert_eq!(response["devices"][0]["id"], "coyote-v3");
         assert_eq!(response["devices"][0]["connected"], false);
+        assert_eq!(response["diagnostics"]["scanAttempts"], 1);
         assert_eq!(response["diagnostics"]["discoveredPeripherals"], 1);
         assert_eq!(response["diagnostics"]["matchedAdvertisements"], 1);
         assert_eq!(

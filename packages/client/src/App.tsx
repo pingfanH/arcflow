@@ -61,6 +61,7 @@ type DeviceScanResponse = {
 };
 
 type DeviceScanDiagnostics = {
+  scanAttempts: number;
   discoveredPeripherals: number;
   inspectedPeripherals: number;
   matchedAdvertisements: number;

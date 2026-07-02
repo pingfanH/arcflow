@@ -132,6 +132,7 @@ Example result:
     }
   ],
   "diagnostics": {
+    "scanAttempts": 1,
     "discoveredPeripherals": 1,
     "inspectedPeripherals": 1,
     "matchedAdvertisements": 1,
@@ -144,7 +145,7 @@ Example result:
       }
     ],
     "skippedUnknownSamples": [],
-    "message": "native BLE scan saw 1 peripherals, inspected 1, matched 1, skipped unknown 0, missing properties 0; matched: 47L121000 [0x180C]"
+    "message": "native BLE scan tried 1 time(s), saw 1 peripherals, inspected 1, matched 1, skipped unknown 0, missing properties 0; matched: 47L121000 [0x180C]"
   }
 }
 ```

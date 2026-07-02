@@ -61,8 +61,9 @@ The app should open a desktop window and show the Device workspace.
    - If no row appears, the empty device list shows the current scan diagnostics
      message directly under `No devices`.
    - Runtime events include `device.scan.diagnostics`, summarizing how many BLE
-     peripherals were seen, how many were accepted as Coyote devices, and sample
-     names/service UUIDs for matched or skipped peripherals.
+     scan attempts ran, how many BLE peripherals were seen, how many were
+     accepted as Coyote devices, and sample names/service UUIDs for matched or
+     skipped peripherals.
 
 2. Click the device row action button to connect.
 
