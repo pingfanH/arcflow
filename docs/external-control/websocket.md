@@ -218,6 +218,26 @@ Required capability: `wave.control`
 }
 ```
 
+### `device.refreshBattery`
+
+Required capability: `device.read`
+
+Reads the shared Coyote battery characteristic for an already connected device
+through the Rust-owned platform BLE provider, then returns the same shape as
+`scan_devices` in the Tauri IPC surface. The method fails if the device is not
+currently connected.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "device.refreshBattery",
+  "params": {
+    "deviceId": "coyote-v3"
+  }
+}
+```
+
 ### `wave.previewStatus`
 
 Required capability: `device.read`

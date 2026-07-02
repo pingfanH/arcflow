@@ -498,6 +498,18 @@ function App({ platform }: AppProps = {}) {
       .finally(() => setOutputDeviceBusyId(null));
   };
 
+  const refreshDeviceBattery = (deviceId: string) => {
+    setOutputDeviceBusyId(deviceId);
+    invoke<DeviceScanResponse>("refresh_device_battery", { deviceId })
+      .then((result) => {
+        setLastScan(result);
+        setDeviceOnline(result.devices.some((device) => device.connected));
+        refreshRuntimeEvents();
+      })
+      .catch((error) => setWaveError(errorMessage(error)))
+      .finally(() => setOutputDeviceBusyId(null));
+  };
+
   const stopOutput = () => {
     setStopBusy(true);
     invoke<StopOutputResponse>("stop_output")
@@ -826,6 +838,7 @@ function App({ platform }: AppProps = {}) {
                     onConnect={connectDevice}
                     onDeactivate={deactivateOutputDevice}
                     onDisconnect={disconnectDevice}
+                    onRefreshBattery={refreshDeviceBattery}
                   />
                 </section>
 
@@ -1067,6 +1080,7 @@ type DeviceListProps = {
   onConnect: (deviceId: string) => void;
   onDeactivate: (deviceId: string) => void;
   onDisconnect: (deviceId: string) => void;
+  onRefreshBattery: (deviceId: string) => void;
 };
 
 function DeviceList({
@@ -1078,6 +1092,7 @@ function DeviceList({
   onConnect,
   onDeactivate,
   onDisconnect,
+  onRefreshBattery,
 }: DeviceListProps) {
   if (devices.length === 0) {
     return (
@@ -1153,15 +1168,26 @@ function DeviceList({
                 <ActionIcon size={16} />
               </button>
               {device.connected ? (
-                <button
-                  className="grid size-9 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={busy}
-                  title="Disconnect device"
-                  type="button"
-                  onClick={() => onDisconnect(device.id)}
-                >
-                  <Cable size={16} />
-                </button>
+                <>
+                  <button
+                    className="grid size-9 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={busy}
+                    title="Refresh battery"
+                    type="button"
+                    onClick={() => onRefreshBattery(device.id)}
+                  >
+                    <Gauge size={16} />
+                  </button>
+                  <button
+                    className="grid size-9 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={busy}
+                    title="Disconnect device"
+                    type="button"
+                    onClick={() => onDisconnect(device.id)}
+                  >
+                    <Cable size={16} />
+                  </button>
+                </>
               ) : null}
             </div>
           </div>

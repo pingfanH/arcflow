@@ -70,7 +70,15 @@ The app should open a desktop window and show the Device workspace.
      characteristic can be read.
    - Runtime events include `device.connected`.
 
-3. Activate output if the device is not already marked `Output`.
+3. Click the battery refresh action on the connected device row.
+
+   Expected:
+
+   - Battery text stays at or changes to `Battery N%` when the battery
+     characteristic can be read.
+   - Runtime events include `device.battery.refreshed`.
+
+4. Activate output if the device is not already marked `Output`.
 
    Expected:
 
@@ -78,14 +86,14 @@ The app should open a desktop window and show the Device workspace.
    - The runtime output counter shows one queued/written BF safety-limit write.
    - Runtime events include `device.output.activated` and a BLE write event.
 
-4. Set low preview strengths.
+5. Set low preview strengths.
 
    Recommended first values:
 
    - Channel A: `1` to `3`.
    - Channel B: `0`.
 
-5. Click `Apply` in the preview controls.
+6. Click `Apply` in the preview controls.
 
    Expected:
 
@@ -93,7 +101,7 @@ The app should open a desktop window and show the Device workspace.
    - Runtime events include `wave.window.submitted`.
    - The device receives one short, conservative A/B output window.
 
-6. Click `Start` in the preview controls.
+7. Click `Start` in the preview controls.
 
    Expected:
 
@@ -101,7 +109,7 @@ The app should open a desktop window and show the Device workspace.
    - BLE output counters increase while preview windows are queued/written.
    - Runtime events include `wave.preview.started`.
 
-7. Click `Stop`.
+8. Click `Stop`.
 
    Expected:
 
@@ -109,7 +117,7 @@ The app should open a desktop window and show the Device workspace.
    - Runtime events include stop/output write activity.
    - The device should stop output promptly.
 
-8. Click the device disconnect action.
+9. Click the device disconnect action.
 
    Expected:
 
@@ -143,7 +151,7 @@ Useful first checks:
   event line when reporting the failure; it tells us whether the device was
   visible but not recognized.
 - If connect fails, confirm the device is not already connected to another app.
-- If battery stays unknown, continue testing output; battery read failure should
-  not block Coyote V3 output writes.
+- If battery stays unknown after connect and refresh, continue testing output;
+  battery read failure should not block Coyote V3 output writes.
 - If output counters show queued but not written, inspect the runtime event log
   and terminal transport error.

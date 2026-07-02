@@ -100,6 +100,7 @@ const RUNTIME_PLUGINS_METHOD: &str = "runtime.plugins";
 const DEVICE_SCAN_METHOD: &str = "device.scan";
 const DEVICE_CONNECT_METHOD: &str = "device.connect";
 const DEVICE_DISCONNECT_METHOD: &str = "device.disconnect";
+const DEVICE_REFRESH_BATTERY_METHOD: &str = "device.refreshBattery";
 const PLUGIN_INVOKE_HOOK_METHOD: &str = "plugin.invokeHook";
 const WAVE_PREVIEW_STATUS_METHOD: &str = "wave.previewStatus";
 const WAVE_PREVIEW_START_METHOD: &str = "wave.startPreview";
@@ -616,6 +617,15 @@ async fn disconnect_device(
 }
 
 #[tauri::command]
+async fn refresh_device_battery(
+    device_id: String,
+    state: tauri::State<'_, CoreState>,
+    runtime_state: tauri::State<'_, RuntimeState>,
+) -> Result<DeviceScanResponse, String> {
+    refresh_device_battery_and_scan(&state.core, &runtime_state, DeviceId::new(device_id)).await
+}
+
+#[tauri::command]
 fn preview_playback_status(state: tauri::State<'_, PreviewPlaybackState>) -> PreviewPlaybackStatus {
     preview_playback_status_from_state(&state)
 }
@@ -1105,6 +1115,18 @@ fn external_request_handler(
                 };
             }
 
+            if request.method == DEVICE_REFRESH_BATTERY_METHOD {
+                let response = execute_device_refresh_battery_external_request(
+                    &session, &request, &core, &runtime,
+                )
+                .await;
+
+                return match response {
+                    Ok(result) => JsonRpcResponse::ok(id, result),
+                    Err(error) => JsonRpcResponse::error(id, error),
+                };
+            }
+
             if request.method == RUNTIME_STATUS_METHOD {
                 let response =
                     execute_runtime_status_external_request(&session, &runtime, &plugin_runtime)
@@ -1201,6 +1223,24 @@ async fn execute_device_disconnect_external_request(
     authorize_external_capability(session, DEVICE_DISCONNECT_METHOD, Capability::WaveControl)?;
     let params: DeviceParams = read_external_params(request)?;
     disconnect_device_and_scan(core, runtime, DeviceId::new(params.device_id))
+        .await
+        .and_then(|response| serde_json::to_value(response).map_err(|error| error.to_string()))
+        .map_err(|error| RpcError::new(-32000, error))
+}
+
+async fn execute_device_refresh_battery_external_request(
+    session: &ClientSession,
+    request: &JsonRpcRequest,
+    core: &ArcFlowCore,
+    runtime: &RuntimeState,
+) -> Result<serde_json::Value, RpcError> {
+    authorize_external_capability(
+        session,
+        DEVICE_REFRESH_BATTERY_METHOD,
+        Capability::DeviceRead,
+    )?;
+    let params: DeviceParams = read_external_params(request)?;
+    refresh_device_battery_and_scan(core, runtime, DeviceId::new(params.device_id))
         .await
         .and_then(|response| serde_json::to_value(response).map_err(|error| error.to_string()))
         .map_err(|error| RpcError::new(-32000, error))
@@ -1621,6 +1661,56 @@ async fn disconnect_device_and_scan(
         .scan_devices()
         .await
         .map_err(|error| error.to_string())?;
+    sync_active_coyote_v3_output_devices(runtime, &scan);
+    let diagnostics = scan_diagnostics(runtime).await;
+    log_ble_scan_diagnostics(runtime, diagnostics.as_ref());
+
+    Ok(device_scan_response(scan, diagnostics))
+}
+
+async fn refresh_device_battery_and_scan(
+    core: &ArcFlowCore,
+    runtime: &RuntimeState,
+    device_id: DeviceId,
+) -> Result<DeviceScanResponse, String> {
+    let mut scan = core
+        .scan_devices()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let Some(device) = scan
+        .devices
+        .iter_mut()
+        .find(|device| device.id == device_id)
+    else {
+        return Err(format!("BLE device `{}` was not found", device_id.as_str()));
+    };
+
+    if !device.connected {
+        return Err(format!(
+            "BLE device `{}` is not connected",
+            device_id.as_str()
+        ));
+    }
+
+    let battery_percent = runtime
+        .ble_platform_provider
+        .read_battery_percent(&device_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    device.battery_percent = battery_percent;
+
+    runtime.events.push(
+        "device.battery.refreshed",
+        match battery_percent {
+            Some(percent) => format!(
+                "device `{}` battery refreshed to {percent}%",
+                device_id.as_str()
+            ),
+            None => format!("device `{}` battery unavailable", device_id.as_str()),
+        },
+    );
+
     sync_active_coyote_v3_output_devices(runtime, &scan);
     let diagnostics = scan_diagnostics(runtime).await;
     log_ble_scan_diagnostics(runtime, diagnostics.as_ref());
@@ -2107,6 +2197,7 @@ where
             scan_devices,
             connect_device,
             disconnect_device,
+            refresh_device_battery,
             stop_output,
             activate_output_device,
             deactivate_output_device,
@@ -2216,6 +2307,7 @@ mod tests {
     struct ConnectingBleProvider {
         connected: Mutex<Vec<DeviceId>>,
         battery_percent: Option<u8>,
+        battery_reads: Mutex<usize>,
     }
 
     impl ConnectingBleProvider {
@@ -2223,6 +2315,7 @@ mod tests {
             Self {
                 connected: Mutex::new(Vec::new()),
                 battery_percent,
+                battery_reads: Mutex::new(0),
             }
         }
 
@@ -2238,6 +2331,13 @@ mod tests {
                 .lock()
                 .expect("connected BLE test provider mutex poisoned")
                 .retain(|connected_id| connected_id != device_id);
+        }
+
+        fn battery_reads(&self) -> usize {
+            *self
+                .battery_reads
+                .lock()
+                .expect("connected BLE battery read mutex poisoned")
         }
     }
 
@@ -2302,6 +2402,10 @@ mod tests {
             &self,
             _device_id: &DeviceId,
         ) -> Result<Option<u8>, arcflow_core::CoreError> {
+            *self
+                .battery_reads
+                .lock()
+                .expect("connected BLE battery read mutex poisoned") += 1;
             Ok(self.battery_percent)
         }
 
@@ -2709,6 +2813,65 @@ mod tests {
             .list()
             .iter()
             .any(|event| event.kind == "device.disconnected"));
+    }
+
+    #[tokio::test]
+    async fn device_refresh_battery_external_request_requires_device_read() {
+        let provider = Arc::new(ConnectingBleProvider::new(Some(88)));
+        let (runtime, core) = runtime_state_with_platform_provider(provider);
+        let session = session_with(vec![Capability::WaveControl]);
+        let request = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(45),
+            DEVICE_REFRESH_BATTERY_METHOD,
+            Some(serde_json::json!({ "deviceId": "coyote-v3" })),
+        );
+
+        let error =
+            execute_device_refresh_battery_external_request(&session, &request, &core, &runtime)
+                .await
+                .unwrap_err();
+
+        assert_eq!(error.code, -32000);
+        assert!(error.message.contains("device.read"));
+        assert!(error.message.contains(DEVICE_REFRESH_BATTERY_METHOD));
+    }
+
+    #[tokio::test]
+    async fn device_refresh_battery_external_request_reads_connected_battery() {
+        let provider = Arc::new(ConnectingBleProvider::new(Some(73)));
+        let (runtime, core) = runtime_state_with_platform_provider(provider.clone());
+        let connect_session = session_with(vec![Capability::WaveControl]);
+        let refresh_session = session_with(vec![Capability::DeviceRead]);
+        let connect = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(46),
+            DEVICE_CONNECT_METHOD,
+            Some(serde_json::json!({ "deviceId": "coyote-v3" })),
+        );
+        let refresh = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(47),
+            DEVICE_REFRESH_BATTERY_METHOD,
+            Some(serde_json::json!({ "deviceId": "coyote-v3" })),
+        );
+
+        execute_device_connect_external_request(&connect_session, &connect, &core, &runtime)
+            .await
+            .unwrap();
+        let response = execute_device_refresh_battery_external_request(
+            &refresh_session,
+            &refresh,
+            &core,
+            &runtime,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(provider.battery_reads(), 1);
+        assert_eq!(response["devices"][0]["batteryPercent"], 73);
+        assert!(runtime
+            .events
+            .list()
+            .iter()
+            .any(|event| event.kind == "device.battery.refreshed"));
     }
 
     #[tokio::test]
