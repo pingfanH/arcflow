@@ -774,6 +774,22 @@ fn submit_preview_window(
     state: tauri::State<'_, CoreState>,
     runtime_state: tauri::State<'_, RuntimeState>,
 ) -> Result<SubmitWaveWindowResponse, String> {
+    submit_preview_window_request(
+        &state.core,
+        &runtime_state,
+        device_id,
+        channel_a_strength,
+        channel_b_strength,
+    )
+}
+
+fn submit_preview_window_request(
+    core: &ArcFlowCore,
+    runtime_state: &RuntimeState,
+    device_id: String,
+    channel_a_strength: u8,
+    channel_b_strength: u8,
+) -> Result<SubmitWaveWindowResponse, String> {
     let device_id = DeviceId::new(device_id);
     let sequence = runtime_state
         .preview_sequences
@@ -784,11 +800,22 @@ fn submit_preview_window(
         CoyoteV3OutputRequest::preview(device_id, sequence, channel_a_strength, channel_b_strength)
             .map_err(|error| error.to_string())?;
 
-    state
-        .core
+    let result = core
         .submit_coyote_v3_window(request)
-        .map(|result| submit_wave_window_response(result, sequence))
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+
+    runtime_state.events.push(
+        "wave.window.submitted",
+        format!(
+            "submitted one output window for `{}` sequence {} with A={} B={}",
+            result.device_id.as_str(),
+            sequence,
+            channel_a_strength,
+            channel_b_strength
+        ),
+    );
+
+    Ok(submit_wave_window_response(result, sequence))
 }
 
 #[tauri::command]
@@ -2721,6 +2748,28 @@ mod tests {
                 accepted: true,
             }
         );
+    }
+
+    #[test]
+    fn submit_preview_window_request_logs_runtime_event() {
+        let (runtime, core) = runtime_state_with_core();
+        core.attach_output_device(DeviceId::new("coyote-v3"))
+            .unwrap();
+
+        let response =
+            submit_preview_window_request(&core, &runtime, "coyote-v3".to_owned(), 3, 1).unwrap();
+
+        assert_eq!(
+            response,
+            SubmitWaveWindowResponse {
+                device_id: "coyote-v3".to_owned(),
+                sequence: 0,
+                accepted: true,
+            }
+        );
+        let events = runtime.events.list();
+        assert_eq!(events[0].kind, "wave.window.submitted");
+        assert!(events[0].message.contains("A=3 B=1"));
     }
 
     #[test]

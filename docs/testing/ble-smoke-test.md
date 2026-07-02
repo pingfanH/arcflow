@@ -83,7 +83,15 @@ The app should open a desktop window and show the Device workspace.
    - Channel A: `1` to `3`.
    - Channel B: `0`.
 
-5. Click `Start` in the preview controls.
+5. Click `Apply` in the preview controls.
+
+   Expected:
+
+   - Runtime output counters increase by one queued/written preview window.
+   - Runtime events include `wave.window.submitted`.
+   - The device receives one short, conservative A/B output window.
+
+6. Click `Start` in the preview controls.
 
    Expected:
 
@@ -91,7 +99,7 @@ The app should open a desktop window and show the Device workspace.
    - BLE output counters increase while preview windows are queued/written.
    - Runtime events include `wave.preview.started`.
 
-6. Click `Stop`.
+7. Click `Stop`.
 
    Expected:
 
@@ -99,7 +107,7 @@ The app should open a desktop window and show the Device workspace.
    - Runtime events include stop/output write activity.
    - The device should stop output promptly.
 
-7. Click the device disconnect action.
+8. Click the device disconnect action.
 
    Expected:
 

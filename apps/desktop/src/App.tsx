@@ -67,6 +67,12 @@ type OutputDeviceActivationResponse = {
   activeOutputDevices: string[];
 };
 
+type SubmitWaveWindowResponse = {
+  deviceId: string;
+  sequence: number;
+  accepted: boolean;
+};
+
 type PreviewPlaybackStatus = {
   running: boolean;
   deviceId: string | null;
@@ -505,6 +511,31 @@ function App() {
       .finally(() => setWaveBusy(false));
   };
 
+  const submitPreviewWindow = () => {
+    const deviceId = activeOutputDeviceIds[0];
+    if (!deviceId) {
+      setWaveError("No active output device");
+      return;
+    }
+
+    setWaveBusy(true);
+    invoke<SubmitWaveWindowResponse>("submit_preview_window", {
+      deviceId,
+      channelAStrength: channelA,
+      channelBStrength: channelB,
+    })
+      .then(() => {
+        setWaveError(null);
+        refreshRuntimeStatus();
+        refreshRuntimeEvents();
+      })
+      .catch((error) => {
+        setWaveError(errorMessage(error));
+        refreshRuntimeStatus();
+      })
+      .finally(() => setWaveBusy(false));
+  };
+
   const stopPreviewPlayback = () => {
     setWaveBusy(true);
     invoke<PreviewPlaybackStatus>("stop_preview_playback")
@@ -818,6 +849,16 @@ function App() {
                   </div>
 
                   <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      className="inline-flex h-10 items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 text-sm font-semibold text-teal-700 hover:bg-teal-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={waveBusy || activeOutputDeviceIds.length === 0}
+                      title="Apply one output window"
+                      type="button"
+                      onClick={submitPreviewWindow}
+                    >
+                      <Zap size={16} />
+                      Apply
+                    </button>
                     <button
                       className="inline-flex h-10 items-center gap-2 rounded-lg bg-teal-600 px-3 text-sm font-semibold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
                       disabled={waveBusy || playing || activeOutputDeviceIds.length === 0}
