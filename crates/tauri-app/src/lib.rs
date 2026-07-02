@@ -620,8 +620,15 @@ async fn disconnect_device(
     device_id: String,
     state: tauri::State<'_, CoreState>,
     runtime_state: tauri::State<'_, RuntimeState>,
+    preview_state: tauri::State<'_, PreviewPlaybackState>,
 ) -> Result<DeviceScanResponse, String> {
-    disconnect_device_and_scan(&state.core, &runtime_state, DeviceId::new(device_id)).await
+    disconnect_device_and_scan(
+        &state.core,
+        &runtime_state,
+        Some(&preview_state),
+        DeviceId::new(device_id),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1168,9 +1175,14 @@ fn external_request_handler(
             }
 
             if request.method == DEVICE_DISCONNECT_METHOD {
-                let response =
-                    execute_device_disconnect_external_request(&session, &request, &core, &runtime)
-                        .await;
+                let response = execute_device_disconnect_external_request(
+                    &session,
+                    &request,
+                    &core,
+                    &runtime,
+                    &preview_state,
+                )
+                .await;
 
                 return match response {
                     Ok(result) => JsonRpcResponse::ok(id, result),
@@ -1285,13 +1297,19 @@ async fn execute_device_disconnect_external_request(
     request: &JsonRpcRequest,
     core: &ArcFlowCore,
     runtime: &RuntimeState,
+    preview_state: &PreviewPlaybackState,
 ) -> Result<serde_json::Value, RpcError> {
     authorize_external_capability(session, DEVICE_DISCONNECT_METHOD, Capability::WaveControl)?;
     let params: DeviceParams = read_external_params(request)?;
-    disconnect_device_and_scan(core, runtime, DeviceId::new(params.device_id))
-        .await
-        .and_then(|response| serde_json::to_value(response).map_err(|error| error.to_string()))
-        .map_err(|error| RpcError::new(-32000, error))
+    disconnect_device_and_scan(
+        core,
+        runtime,
+        Some(preview_state),
+        DeviceId::new(params.device_id),
+    )
+    .await
+    .and_then(|response| serde_json::to_value(response).map_err(|error| error.to_string()))
+    .map_err(|error| RpcError::new(-32000, error))
 }
 
 async fn execute_device_refresh_battery_external_request(
@@ -1616,6 +1634,46 @@ fn cancel_preview_playback(state: &PreviewPlaybackState, events: &RuntimeEventLo
     }
 }
 
+fn cancel_preview_playback_for_device(
+    state: &PreviewPlaybackState,
+    events: &RuntimeEventLog,
+    device_id: &DeviceId,
+) -> bool {
+    let running = {
+        let mut inner = state
+            .inner
+            .lock()
+            .expect("preview playback state mutex poisoned");
+
+        if inner
+            .running
+            .as_ref()
+            .is_some_and(|running| &running.device_id == device_id)
+        {
+            inner.running.take()
+        } else {
+            None
+        }
+    };
+
+    let Some(mut running) = running else {
+        return false;
+    };
+
+    if let Some(stop_sender) = running.stop_sender.take() {
+        let _ = stop_sender.send(());
+    }
+
+    events.push(
+        "wave.preview.stopped",
+        format!(
+            "preview playback stopped for `{}`",
+            running.device_id.as_str()
+        ),
+    );
+    true
+}
+
 fn clear_preview_playback_if_current(
     state: &Arc<Mutex<PreviewPlaybackInner>>,
     id: u64,
@@ -1735,8 +1793,13 @@ async fn connect_device_and_scan(
 async fn disconnect_device_and_scan(
     core: &ArcFlowCore,
     runtime: &RuntimeState,
+    preview_state: Option<&PreviewPlaybackState>,
     device_id: DeviceId,
 ) -> Result<DeviceScanResponse, String> {
+    if let Some(preview_state) = preview_state {
+        cancel_preview_playback_for_device(preview_state, &runtime.events, &device_id);
+    }
+
     if core.active_output_devices().contains(&device_id) {
         core.stop_all_output().map_err(|error| error.to_string())?;
         core.detach_output_device(&device_id)
@@ -2881,6 +2944,7 @@ mod tests {
     async fn device_disconnect_external_request_disconnects_and_returns_scan() {
         let provider = Arc::new(ConnectingBleProvider::new(Some(88)));
         let (runtime, core) = runtime_state_with_platform_provider(provider.clone());
+        let preview_state = PreviewPlaybackState::default();
         let session = session_with(vec![Capability::WaveControl]);
         let connect = JsonRpcRequest::new(
             arcflow_external_control::RequestId::Number(43),
@@ -2896,16 +2960,34 @@ mod tests {
         execute_device_connect_external_request(&session, &connect, &core, &runtime)
             .await
             .unwrap();
-        let response =
-            execute_device_disconnect_external_request(&session, &disconnect, &core, &runtime)
-                .await
-                .unwrap();
+        let (stop_sender, _stop_receiver) = oneshot::channel();
+        preview_state
+            .inner
+            .lock()
+            .expect("preview playback state mutex poisoned")
+            .running = Some(RunningPreviewPlayback {
+            id: 6,
+            device_id: DeviceId::new("coyote-v3"),
+            channel_a_strength: 4,
+            channel_b_strength: 0,
+            stop_sender: Some(stop_sender),
+        });
+        let response = execute_device_disconnect_external_request(
+            &session,
+            &disconnect,
+            &core,
+            &runtime,
+            &preview_state,
+        )
+        .await
+        .unwrap();
 
         assert!(provider.connected_devices().is_empty());
         assert_eq!(response["adapterStatus"], "ready");
         assert_eq!(response["devices"][0]["id"], "coyote-v3");
         assert_eq!(response["devices"][0]["connected"], false);
         assert!(runtime.output_controller.active_devices().is_empty());
+        assert!(!preview_playback_status_from_state(&preview_state).running);
         assert!(runtime
             .events
             .list()
@@ -3355,6 +3437,31 @@ mod tests {
 
         assert!(!preview_playback_status_from_state(&state).running);
         assert_eq!(events.list()[0].kind, "wave.preview.stopped");
+    }
+
+    #[test]
+    fn cancel_preview_playback_for_device_keeps_other_devices_running() {
+        let state = PreviewPlaybackState::default();
+        let events = RuntimeEventLog::default();
+        let (stop_sender, _stop_receiver) = oneshot::channel();
+        state
+            .inner
+            .lock()
+            .expect("preview playback state mutex poisoned")
+            .running = Some(RunningPreviewPlayback {
+            id: 5,
+            device_id: DeviceId::new("coyote-v3"),
+            channel_a_strength: 10,
+            channel_b_strength: 0,
+            stop_sender: Some(stop_sender),
+        });
+
+        let stopped =
+            cancel_preview_playback_for_device(&state, &events, &DeviceId::new("other-device"));
+
+        assert!(!stopped);
+        assert!(preview_playback_status_from_state(&state).running);
+        assert!(events.list().is_empty());
     }
 
     #[test]

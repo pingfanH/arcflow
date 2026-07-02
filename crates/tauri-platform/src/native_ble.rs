@@ -156,14 +156,26 @@ impl TauriBleDiscoveryProvider for NativeBlePlatformProvider {
     async fn scan_state(&self) -> Result<TauriBleDiscoveryState, CoreError> {
         let adapter = match self.adapter().await {
             Ok(adapter) => adapter,
-            Err(error) if error.to_string().contains("no BLE adapter") => {
-                return Ok(TauriBleDiscoveryState::PoweredOff);
+            Err(error) if is_powered_off_error(&error) => {
+                return Ok(TauriBleDiscoveryState::PoweredOff)
+            }
+            Err(error) if is_permission_denied_error(&error) => {
+                return Ok(TauriBleDiscoveryState::PermissionDenied);
             }
             Err(error) => return Err(error),
         };
 
         let mut advertisements = Vec::new();
-        let peripherals = self.scan_peripherals(&adapter).await?;
+        let peripherals = match self.scan_peripherals(&adapter).await {
+            Ok(peripherals) => peripherals,
+            Err(error) if is_powered_off_error(&error) => {
+                return Ok(TauriBleDiscoveryState::PoweredOff);
+            }
+            Err(error) if is_permission_denied_error(&error) => {
+                return Ok(TauriBleDiscoveryState::PermissionDenied);
+            }
+            Err(error) => return Err(error),
+        };
         let mut diagnostics = TauriBleScanDiagnostics::new(peripherals.len());
 
         for peripheral in peripherals {
@@ -354,6 +366,23 @@ fn transport_error(error: impl std::fmt::Display) -> CoreError {
     CoreError::Transport(error.to_string())
 }
 
+fn is_powered_off_error(error: &CoreError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("no ble adapter")
+        || message.contains("powered off")
+        || message.contains("bluetooth is off")
+}
+
+fn is_permission_denied_error(error: &CoreError) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("permission")
+        || message.contains("unauthorized")
+        || message.contains("not authorized")
+        || message.contains("denied")
+        || message.contains("not permitted")
+        || message.contains("entitlement")
+}
+
 fn missing_characteristic_error(characteristic: BleCharacteristic) -> CoreError {
     CoreError::Transport(format!(
         "BLE characteristic {} is not available",
@@ -423,5 +452,34 @@ mod tests {
     fn ignores_unknown_named_devices_without_coyote_services() {
         assert_eq!(coyote_service_uuids(Vec::new(), Some("Keyboard")), None);
         assert_eq!(coyote_service_uuids(Vec::new(), None), None);
+    }
+
+    #[test]
+    fn maps_native_permission_errors_to_adapter_state() {
+        assert!(is_permission_denied_error(&CoreError::Transport(
+            "Bluetooth permission denied".to_owned()
+        )));
+        assert!(is_permission_denied_error(&CoreError::Transport(
+            "CoreBluetooth is not authorized".to_owned()
+        )));
+        assert!(is_permission_denied_error(&CoreError::Transport(
+            "missing bluetooth entitlement".to_owned()
+        )));
+        assert!(!is_permission_denied_error(&CoreError::Transport(
+            "connection timed out".to_owned()
+        )));
+    }
+
+    #[test]
+    fn maps_native_power_errors_to_adapter_state() {
+        assert!(is_powered_off_error(&CoreError::Transport(
+            "no BLE adapter is available".to_owned()
+        )));
+        assert!(is_powered_off_error(&CoreError::Transport(
+            "Bluetooth is off".to_owned()
+        )));
+        assert!(!is_powered_off_error(&CoreError::Transport(
+            "Bluetooth permission denied".to_owned()
+        )));
     }
 }

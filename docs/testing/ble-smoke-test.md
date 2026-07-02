@@ -31,7 +31,10 @@ Not covered yet:
 - Use the desktop Tauri app, not a plain browser tab.
 - Keep the Coyote V3 device nearby and powered on.
 - Enable Bluetooth in the operating system.
-- Grant Bluetooth permission to the ArcFlow desktop app if prompted.
+- Grant Bluetooth permission to the ArcFlow desktop app if prompted. On macOS,
+  the desktop bundle includes Bluetooth usage descriptions; if permission was
+  denied before, re-enable ArcFlow in System Settings > Privacy & Security >
+  Bluetooth and restart the dev app.
 - Keep channel strengths low for the first test.
 - ArcFlow desktop is configured as a single-instance app. Starting it again
   should focus the existing window instead of opening another BLE session.
@@ -131,6 +134,8 @@ The app should open a desktop window and show the Device workspace.
 
    - The device row changes from `Ready` or `Output` back to `Offline`.
    - Runtime events include `device.disconnected`.
+   - If preview playback was running for that device, runtime events also
+     include `wave.preview.stopped`.
    - The output-device set is empty for that device.
    - A later `Scan` can rediscover the device.
 
@@ -152,6 +157,9 @@ Useful first checks:
 - If scan never finds the device, restart the device and run `Scan` again. The
   native provider scans for five seconds and accepts service `0x180C`, local
   name `47L121000`, or `47L121` serial-name variants for Coyote V3 discovery.
+- If the empty list says `Adapter permission denied`, grant Bluetooth access to
+  ArcFlow and restart the app. If it says `Adapter powered off`, turn Bluetooth
+  back on and scan again.
 - If the empty list or `device.scan.diagnostics` says `saw 0 peripherals`, the
   operating system did not expose any BLE peripherals to ArcFlow during that
   scan window.

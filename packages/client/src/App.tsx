@@ -755,7 +755,7 @@ function App({ platform }: AppProps = {}) {
     }
 
     if (lastScan) {
-      return `Adapter ${lastScan.adapterStatus}`;
+      return `Adapter ${adapterStatusLabel(lastScan.adapterStatus)}`;
     }
 
     return null;
@@ -765,6 +765,14 @@ function App({ platform }: AppProps = {}) {
       return connectedDeviceCount === 1
         ? "1 Coyote device connected"
         : `${connectedDeviceCount} Coyote devices connected`;
+    }
+
+    if (lastScan?.adapterStatus === "permissionDenied") {
+      return "Bluetooth permission needed";
+    }
+
+    if (lastScan?.adapterStatus === "poweredOff") {
+      return "Bluetooth is off";
     }
 
     if (lastScan?.adapterStatus === "unsupported") {
@@ -1241,6 +1249,26 @@ function deviceModelLabel(model: string) {
 
 function batteryLabel(percent: number | null) {
   return percent === null ? "Battery --" : `Battery ${percent}%`;
+}
+
+function adapterStatusLabel(status: string) {
+  if (status === "ready") {
+    return "ready";
+  }
+
+  if (status === "permissionDenied") {
+    return "permission denied";
+  }
+
+  if (status === "poweredOff") {
+    return "powered off";
+  }
+
+  if (status === "unsupported") {
+    return "unsupported";
+  }
+
+  return status;
 }
 
 type RuntimeEventsPanelProps = {
