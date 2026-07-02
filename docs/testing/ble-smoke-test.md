@@ -162,8 +162,10 @@ Useful first checks:
   native provider scans for five seconds and accepts service `0x180C`, local
   name `47L121000`, or `47L121` serial-name variants for Coyote V3 discovery.
   If the first broad scan does not identify a Coyote device, ArcFlow also runs
-  a Coyote service-filtered scan for `0x180B` and `0x180C` before returning the
-  empty result.
+  a Coyote service-filtered scan for `0x180A`, `0x180B`, and `0x180C` before
+  returning the empty result. Peripheral properties are retried briefly during
+  each scan because some platform adapters expose names and services a moment
+  after the peripheral first appears.
 - If the empty list says `Adapter permission denied`, grant Bluetooth access to
   ArcFlow and restart the app. If it says `Adapter powered off`, turn Bluetooth
   back on and scan again.

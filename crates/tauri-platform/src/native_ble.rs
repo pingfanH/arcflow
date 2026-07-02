@@ -8,7 +8,7 @@ use std::{
 
 use arcflow_core::{
     bluetooth_base_uuid, BleAdvertisement, BleCharacteristic, CoreError, DeviceId,
-    COYOTE_V2_SERVICE_UUID, COYOTE_V3_SERVICE_UUID,
+    COYOTE_BATTERY_SERVICE_UUID, COYOTE_V2_SERVICE_UUID, COYOTE_V3_SERVICE_UUID,
 };
 use arcflow_protocol::coyote::{v3::B1Notification, BatteryLevel, V2_DEVICE_NAME, V3_DEVICE_NAME};
 use async_trait::async_trait;
@@ -30,6 +30,8 @@ use crate::{
 };
 
 const DEFAULT_SCAN_DURATION: Duration = Duration::from_secs(5);
+const PROPERTIES_RETRY_DELAY: Duration = Duration::from_millis(200);
+const PROPERTIES_RETRY_ATTEMPTS: usize = 3;
 
 #[derive(Debug)]
 struct NativeBleAdvertisementScan {
@@ -150,7 +152,7 @@ impl NativeBlePlatformProvider {
         let mut diagnostics = TauriBleScanDiagnostics::new(peripherals.len());
 
         for peripheral in peripherals {
-            let Some(properties) = peripheral.properties().await.map_err(transport_error)? else {
+            let Some(properties) = read_properties_with_retry(&peripheral).await? else {
                 diagnostics.skipped_missing_properties += 1;
                 continue;
             };
@@ -514,10 +516,29 @@ fn coyote_scan_filter() -> ScanFilter {
 }
 
 fn coyote_service_filter_uuids() -> Vec<Uuid> {
-    [COYOTE_V2_SERVICE_UUID, COYOTE_V3_SERVICE_UUID]
-        .into_iter()
-        .map(bluetooth_service_uuid)
-        .collect()
+    [
+        COYOTE_BATTERY_SERVICE_UUID,
+        COYOTE_V2_SERVICE_UUID,
+        COYOTE_V3_SERVICE_UUID,
+    ]
+    .into_iter()
+    .map(bluetooth_service_uuid)
+    .collect()
+}
+
+async fn read_properties_with_retry(
+    peripheral: &Peripheral,
+) -> Result<Option<btleplug::api::PeripheralProperties>, CoreError> {
+    for attempt in 0..PROPERTIES_RETRY_ATTEMPTS {
+        let properties = peripheral.properties().await.map_err(transport_error)?;
+        if properties.is_some() || attempt + 1 == PROPERTIES_RETRY_ATTEMPTS {
+            return Ok(properties);
+        }
+
+        sleep(PROPERTIES_RETRY_DELAY).await;
+    }
+
+    Ok(None)
 }
 
 fn bluetooth_service_uuid(short_uuid: u16) -> Uuid {
@@ -630,6 +651,7 @@ mod tests {
         assert_eq!(
             filter.services,
             vec![
+                bluetooth_service_uuid(COYOTE_BATTERY_SERVICE_UUID),
                 bluetooth_service_uuid(COYOTE_V2_SERVICE_UUID),
                 bluetooth_service_uuid(COYOTE_V3_SERVICE_UUID)
             ]
