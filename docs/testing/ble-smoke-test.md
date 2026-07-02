@@ -55,6 +55,8 @@ The app should open a desktop window and show the Device workspace.
      documented V3 local name `47L121000`, or a `47L121` serial-name variant.
    - The row is initially `Offline` if ArcFlow has discovered but not connected
      to it yet.
+   - If no row appears, the empty device list shows the current scan diagnostics
+     message directly under `No devices`.
    - Runtime events include `device.scan.diagnostics`, summarizing how many BLE
      peripherals were seen, how many were accepted as Coyote devices, and sample
      names/service UUIDs for matched or skipped peripherals.
@@ -134,8 +136,9 @@ Useful first checks:
 - If scan never finds the device, restart the device and run `Scan` again. The
   native provider scans for five seconds and accepts service `0x180C`, local
   name `47L121000`, or `47L121` serial-name variants for Coyote V3 discovery.
-- If `device.scan.diagnostics` says `saw 0 peripherals`, the operating system
-  did not expose any BLE peripherals to ArcFlow during that scan window.
+- If the empty list or `device.scan.diagnostics` says `saw 0 peripherals`, the
+  operating system did not expose any BLE peripherals to ArcFlow during that
+  scan window.
 - If diagnostics show skipped peripherals with names or services, include that
   event line when reporting the failure; it tells us whether the device was
   visible but not recognized.

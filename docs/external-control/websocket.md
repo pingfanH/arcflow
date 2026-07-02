@@ -108,13 +108,44 @@ Required capability: `device.read`
 
 Refreshes the Rust-owned BLE scan and synchronizes the Coyote V3 output-device
 set. The response has the same shape as `scan_devices` in the Tauri IPC
-surface.
+surface, including platform BLE diagnostics when the provider exposes them.
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
   "method": "device.scan"
+}
+```
+
+Example result:
+
+```json
+{
+  "adapterStatus": "ready",
+  "devices": [
+    {
+      "id": "coyote-v3",
+      "model": "coyoteV3",
+      "batteryPercent": null,
+      "connected": false
+    }
+  ],
+  "diagnostics": {
+    "discoveredPeripherals": 1,
+    "inspectedPeripherals": 1,
+    "matchedAdvertisements": 1,
+    "skippedMissingProperties": 0,
+    "skippedUnknownPeripherals": 0,
+    "matchedSamples": [
+      {
+        "localName": "47L121000",
+        "serviceUuids": ["0x180C"]
+      }
+    ],
+    "skippedUnknownSamples": [],
+    "message": "native BLE scan saw 1 peripherals, inspected 1, matched 1, skipped unknown 0, missing properties 0; matched: 47L121000 [0x180C]"
+  }
 }
 ```
 
@@ -140,7 +171,7 @@ Required capability: `wave.control`
 Connects a discovered BLE device through the Tauri platform provider, reads
 battery when available, refreshes the Rust device scan, and synchronizes the
 Coyote V3 output-device set. The response has the same shape as `scan_devices`
-in the Tauri IPC surface.
+in the Tauri IPC surface, including platform BLE diagnostics when available.
 
 ```json
 {

@@ -108,8 +108,9 @@ An empty output is explicit:
 }
 ```
 
-`device.scan` returns the same Core-owned discovery shape used by IPC and the
-local plugin bridge:
+`device.scan` returns the Core-owned discovery shape. Platform BLE diagnostics
+stay on the Tauri IPC and local plugin bridge response because they are adapter
+metadata rather than plugin-visible device state:
 
 ```json
 {

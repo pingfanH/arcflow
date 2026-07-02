@@ -57,6 +57,23 @@ type DeviceSummary = {
 type DeviceScanResponse = {
   adapterStatus: string;
   devices: DeviceSummary[];
+  diagnostics?: DeviceScanDiagnostics | null;
+};
+
+type DeviceScanDiagnostics = {
+  discoveredPeripherals: number;
+  inspectedPeripherals: number;
+  matchedAdvertisements: number;
+  skippedMissingProperties: number;
+  skippedUnknownPeripherals: number;
+  matchedSamples: DeviceScanDiagnosticSample[];
+  skippedUnknownSamples: DeviceScanDiagnosticSample[];
+  message: string;
+};
+
+type DeviceScanDiagnosticSample = {
+  localName: string | null;
+  serviceUuids: string[];
 };
 
 type StopOutputResponse = {
@@ -194,6 +211,7 @@ const stoppedExternalControl: ExternalControlStatus = {
 const emptyDeviceScan: DeviceScanResponse = {
   adapterStatus: "unsupported",
   devices: [],
+  diagnostics: null,
 };
 
 const fallbackStorageStatus: StorageStatus = {
@@ -684,6 +702,10 @@ function App({ platform }: AppProps = {}) {
   const deviceListDetail = useMemo(() => {
     if (scanError) {
       return scanError;
+    }
+
+    if (lastScan?.diagnostics) {
+      return lastScan.diagnostics.message;
     }
 
     if (latestScanDiagnostic) {

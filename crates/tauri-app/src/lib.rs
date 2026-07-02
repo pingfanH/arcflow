@@ -222,6 +222,7 @@ struct ExternalControlStatus {
 struct DeviceScanResponse {
     adapter_status: String,
     devices: Vec<DeviceResponse>,
+    diagnostics: Option<DeviceScanDiagnosticsResponse>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -231,6 +232,26 @@ struct DeviceResponse {
     model: String,
     battery_percent: Option<u8>,
     connected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceScanDiagnosticsResponse {
+    discovered_peripherals: usize,
+    inspected_peripherals: usize,
+    matched_advertisements: usize,
+    skipped_missing_properties: usize,
+    skipped_unknown_peripherals: usize,
+    matched_samples: Vec<DeviceScanDiagnosticSampleResponse>,
+    skipped_unknown_samples: Vec<DeviceScanDiagnosticSampleResponse>,
+    message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceScanDiagnosticSampleResponse {
+    local_name: Option<String>,
+    service_uuids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1535,9 +1556,10 @@ async fn scan_devices_and_sync(
         .map_err(|error| error.to_string())?;
 
     sync_active_coyote_v3_output_devices(runtime, &scan);
-    log_ble_scan_diagnostics(runtime).await;
+    let diagnostics = scan_diagnostics(runtime).await;
+    log_ble_scan_diagnostics(runtime, diagnostics.as_ref());
 
-    Ok(device_scan_response(scan))
+    Ok(device_scan_response(scan, diagnostics))
 }
 
 async fn connect_device_and_scan(
@@ -1567,8 +1589,10 @@ async fn connect_device_and_scan(
         .await
         .map_err(|error| error.to_string())?;
     sync_active_coyote_v3_output_devices(runtime, &scan);
+    let diagnostics = scan_diagnostics(runtime).await;
+    log_ble_scan_diagnostics(runtime, diagnostics.as_ref());
 
-    Ok(device_scan_response(scan))
+    Ok(device_scan_response(scan, diagnostics))
 }
 
 async fn disconnect_device_and_scan(
@@ -1598,8 +1622,10 @@ async fn disconnect_device_and_scan(
         .await
         .map_err(|error| error.to_string())?;
     sync_active_coyote_v3_output_devices(runtime, &scan);
+    let diagnostics = scan_diagnostics(runtime).await;
+    log_ble_scan_diagnostics(runtime, diagnostics.as_ref());
 
-    Ok(device_scan_response(scan))
+    Ok(device_scan_response(scan, diagnostics))
 }
 
 fn sync_active_coyote_v3_output_devices(runtime: &RuntimeState, scan: &DeviceScanResult) {
@@ -1637,11 +1663,14 @@ fn sync_active_coyote_v3_output_devices(runtime: &RuntimeState, scan: &DeviceSca
     }
 }
 
-async fn log_ble_scan_diagnostics(runtime: &RuntimeState) {
-    let Some(diagnostics) = runtime.ble_platform_provider.scan_diagnostics().await else {
+async fn scan_diagnostics(runtime: &RuntimeState) -> Option<TauriBleScanDiagnostics> {
+    runtime.ble_platform_provider.scan_diagnostics().await
+}
+
+fn log_ble_scan_diagnostics(runtime: &RuntimeState, diagnostics: Option<&TauriBleScanDiagnostics>) {
+    let Some(diagnostics) = diagnostics else {
         return;
     };
-
     runtime.events.push(
         "device.scan.diagnostics",
         ble_scan_diagnostics_message(&diagnostics),
@@ -1851,10 +1880,51 @@ fn spawn_runtime_event_listeners(
     });
 }
 
-fn device_scan_response(result: DeviceScanResult) -> DeviceScanResponse {
+fn device_scan_response(
+    result: DeviceScanResult,
+    diagnostics: Option<TauriBleScanDiagnostics>,
+) -> DeviceScanResponse {
     DeviceScanResponse {
         adapter_status: result.adapter_status.as_str().to_owned(),
         devices: result.devices.into_iter().map(device_response).collect(),
+        diagnostics: diagnostics.map(device_scan_diagnostics_response),
+    }
+}
+
+fn device_scan_diagnostics_response(
+    diagnostics: TauriBleScanDiagnostics,
+) -> DeviceScanDiagnosticsResponse {
+    let message = ble_scan_diagnostics_message(&diagnostics);
+    DeviceScanDiagnosticsResponse {
+        discovered_peripherals: diagnostics.discovered_peripherals,
+        inspected_peripherals: diagnostics.inspected_peripherals,
+        matched_advertisements: diagnostics.matched_advertisements,
+        skipped_missing_properties: diagnostics.skipped_missing_properties,
+        skipped_unknown_peripherals: diagnostics.skipped_unknown_peripherals,
+        matched_samples: diagnostics
+            .matched_samples
+            .into_iter()
+            .map(device_scan_diagnostic_sample_response)
+            .collect(),
+        skipped_unknown_samples: diagnostics
+            .skipped_unknown_samples
+            .into_iter()
+            .map(device_scan_diagnostic_sample_response)
+            .collect(),
+        message,
+    }
+}
+
+fn device_scan_diagnostic_sample_response(
+    sample: TauriBlePeripheralDiagnostic,
+) -> DeviceScanDiagnosticSampleResponse {
+    DeviceScanDiagnosticSampleResponse {
+        local_name: sample.local_name,
+        service_uuids: sample
+            .service_uuids
+            .into_iter()
+            .map(|service_uuid| format!("0x{service_uuid:04X}"))
+            .collect(),
     }
 }
 
@@ -2242,6 +2312,13 @@ mod tests {
             self.disconnect(device_id);
             Ok(())
         }
+
+        async fn scan_diagnostics(&self) -> Option<TauriBleScanDiagnostics> {
+            let mut diagnostics = TauriBleScanDiagnostics::new(1);
+            diagnostics.inspected_peripherals = 1;
+            diagnostics.record_matched(Some("Coyote V3"), &[arcflow_core::COYOTE_V3_SERVICE_UUID]);
+            Some(diagnostics)
+        }
     }
 
     fn test_bundle_root(name: &str) -> PathBuf {
@@ -2509,6 +2586,16 @@ mod tests {
         assert_eq!(response["adapterStatus"], "ready");
         assert_eq!(response["devices"][0]["id"], "coyote-v3");
         assert_eq!(response["devices"][0]["connected"], false);
+        assert_eq!(response["diagnostics"]["discoveredPeripherals"], 1);
+        assert_eq!(response["diagnostics"]["matchedAdvertisements"], 1);
+        assert_eq!(
+            response["diagnostics"]["matchedSamples"][0]["serviceUuids"][0],
+            "0x180C"
+        );
+        assert!(response["diagnostics"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("matched: Coyote V3 [0x180C]"));
     }
 
     #[tokio::test]
@@ -2617,7 +2704,11 @@ mod tests {
         assert_eq!(response["devices"][0]["id"], "coyote-v3");
         assert_eq!(response["devices"][0]["connected"], false);
         assert!(runtime.output_controller.active_devices().is_empty());
-        assert_eq!(runtime.events.list()[1].kind, "device.disconnected");
+        assert!(runtime
+            .events
+            .list()
+            .iter()
+            .any(|event| event.kind == "device.disconnected"));
     }
 
     #[tokio::test]
