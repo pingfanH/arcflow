@@ -273,6 +273,25 @@ preview playback.
 }
 ```
 
+### `wave.updatePreview`
+
+Required capability: `wave.control`
+
+Updates the active Rust-owned preview playback session. The next preview output
+windows use the new channel strengths without stopping playback.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "method": "wave.updatePreview",
+  "params": {
+    "channelAStrength": 9,
+    "channelBStrength": 1
+  }
+}
+```
+
 ### `wave.stopPreview`
 
 Required capability: `wave.control`
@@ -282,7 +301,7 @@ Stops the preview session and sends a stop-output command through Rust Core.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 8,
+  "id": 9,
   "method": "wave.stopPreview"
 }
 ```
@@ -700,6 +719,10 @@ socket.addEventListener("message", async function onHello(event) {
     deviceId: "coyote-v3",
     channelAStrength: 8,
     channelBStrength: 0,
+  });
+  await request("wave.updatePreview", {
+    channelAStrength: 10,
+    channelBStrength: 1,
   });
 
   await request("plugin.invokeHook", {

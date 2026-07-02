@@ -109,7 +109,15 @@ The app should open a desktop window and show the Device workspace.
    - BLE output counters increase while preview windows are queued/written.
    - Runtime events include `wave.preview.started`.
 
-8. Click `Stop`.
+8. While preview is running, change Channel A to another low value.
+
+   Expected:
+
+   - Runtime events include `wave.preview.updated`.
+   - Later preview windows use the new channel strengths without restarting the
+     preview session.
+
+9. Click `Stop`.
 
    Expected:
 
@@ -117,7 +125,7 @@ The app should open a desktop window and show the Device workspace.
    - Runtime events include stop/output write activity.
    - The device should stop output promptly.
 
-9. Click the device disconnect action.
+10. Click the device disconnect action.
 
    Expected:
 

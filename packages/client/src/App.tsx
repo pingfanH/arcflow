@@ -705,6 +705,36 @@ function App({ platform }: AppProps = {}) {
     lastScan?.devices.filter((device: DeviceSummary) => device.connected).length ?? 0;
   const activeOutputDeviceIds = runtimeStatus?.activeOutputDevices ?? [];
   const playing = previewStatus.running;
+  useEffect(() => {
+    if (!playing || !previewStatus.deviceId) {
+      return;
+    }
+
+    const update = window.setTimeout(() => {
+      invoke<PreviewPlaybackStatus>("update_preview_playback", {
+        channelAStrength: channelA,
+        channelBStrength: channelB,
+      })
+        .then((result) => {
+          setPreviewStatus(result);
+          setWaveError(null);
+          refreshRuntimeEvents();
+        })
+        .catch((error) => {
+          setWaveError(errorMessage(error));
+          refreshRuntimeStatus();
+        });
+    }, 150);
+
+    return () => window.clearTimeout(update);
+  }, [
+    channelA,
+    channelB,
+    playing,
+    previewStatus.deviceId,
+    refreshRuntimeEvents,
+    refreshRuntimeStatus,
+  ]);
   const latestScanDiagnostic = useMemo(() => {
     return runtimeEvents?.events
       .slice()

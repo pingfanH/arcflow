@@ -104,6 +104,7 @@ const DEVICE_REFRESH_BATTERY_METHOD: &str = "device.refreshBattery";
 const PLUGIN_INVOKE_HOOK_METHOD: &str = "plugin.invokeHook";
 const WAVE_PREVIEW_STATUS_METHOD: &str = "wave.previewStatus";
 const WAVE_PREVIEW_START_METHOD: &str = "wave.startPreview";
+const WAVE_PREVIEW_UPDATE_METHOD: &str = "wave.updatePreview";
 const WAVE_PREVIEW_STOP_METHOD: &str = "wave.stopPreview";
 const RUNTIME_EVENT_LIMIT: usize = 128;
 
@@ -289,6 +290,13 @@ struct PreviewPlaybackStatus {
 #[serde(rename_all = "camelCase")]
 struct StartPreviewPlaybackParams {
     device_id: String,
+    channel_a_strength: u8,
+    channel_b_strength: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdatePreviewPlaybackParams {
     channel_a_strength: u8,
     channel_b_strength: u8,
 }
@@ -660,6 +668,23 @@ fn stop_preview_playback(
     stop_preview_playback_session(&state.core, &runtime_state, &preview_state)
 }
 
+#[tauri::command]
+fn update_preview_playback(
+    channel_a_strength: u8,
+    channel_b_strength: u8,
+    runtime_state: tauri::State<'_, RuntimeState>,
+    preview_state: tauri::State<'_, PreviewPlaybackState>,
+) -> Result<PreviewPlaybackStatus, String> {
+    update_preview_playback_session(
+        &runtime_state,
+        &preview_state,
+        UpdatePreviewPlaybackParams {
+            channel_a_strength,
+            channel_b_strength,
+        },
+    )
+}
+
 fn start_preview_playback_session(
     core: &ArcFlowCore,
     runtime_state: &RuntimeState,
@@ -713,7 +738,6 @@ fn start_preview_playback_session(
     );
     spawn_preview_playback_loop(
         id,
-        session,
         core.clone(),
         runtime_state.clone(),
         preview_state.inner.clone(),
@@ -721,6 +745,45 @@ fn start_preview_playback_session(
     );
 
     Ok(preview_playback_status_from_state(preview_state))
+}
+
+fn update_preview_playback_session(
+    runtime_state: &RuntimeState,
+    preview_state: &PreviewPlaybackState,
+    params: UpdatePreviewPlaybackParams,
+) -> Result<PreviewPlaybackStatus, String> {
+    let status = {
+        let mut inner = preview_state
+            .inner
+            .lock()
+            .expect("preview playback state mutex poisoned");
+        let Some(running) = inner.running.as_mut() else {
+            return Err("preview playback is not running".to_owned());
+        };
+        let session = CoyoteV3PreviewSession::new(
+            running.device_id.clone(),
+            params.channel_a_strength,
+            params.channel_b_strength,
+        )
+        .map_err(|error| error.to_string())?;
+
+        running.channel_a_strength = session.channel_a_strength();
+        running.channel_b_strength = session.channel_b_strength();
+
+        preview_playback_status_from_running(running)
+    };
+
+    runtime_state.events.push(
+        "wave.preview.updated",
+        format!(
+            "preview playback updated for `{}` with A={} B={}",
+            status.device_id.as_deref().unwrap_or("unknown"),
+            status.channel_a_strength,
+            status.channel_b_strength
+        ),
+    );
+
+    Ok(status)
 }
 
 fn stop_preview_playback_session(
@@ -1184,7 +1247,10 @@ fn external_request_handler(
 fn is_preview_playback_external_request(request: &JsonRpcRequest) -> bool {
     matches!(
         request.method.as_str(),
-        WAVE_PREVIEW_STATUS_METHOD | WAVE_PREVIEW_START_METHOD | WAVE_PREVIEW_STOP_METHOD
+        WAVE_PREVIEW_STATUS_METHOD
+            | WAVE_PREVIEW_START_METHOD
+            | WAVE_PREVIEW_UPDATE_METHOD
+            | WAVE_PREVIEW_STOP_METHOD
     )
 }
 
@@ -1271,6 +1337,17 @@ fn execute_preview_playback_external_request(
             )?;
             let params: StartPreviewPlaybackParams = read_external_params(request)?;
             start_preview_playback_session(core, runtime, preview_state, params)
+                .and_then(|status| serde_json::to_value(status).map_err(|error| error.to_string()))
+                .map_err(|error| RpcError::new(-32000, error))
+        }
+        WAVE_PREVIEW_UPDATE_METHOD => {
+            authorize_external_capability(
+                session,
+                request.method.as_str(),
+                Capability::WaveControl,
+            )?;
+            let params: UpdatePreviewPlaybackParams = read_external_params(request)?;
+            update_preview_playback_session(runtime, preview_state, params)
                 .and_then(|status| serde_json::to_value(status).map_err(|error| error.to_string()))
                 .map_err(|error| RpcError::new(-32000, error))
         }
@@ -1443,7 +1520,6 @@ fn plugin_manage_capability_error(session: &ClientSession, method: &str) -> RpcE
 
 fn spawn_preview_playback_loop(
     id: u64,
-    session: CoyoteV3PreviewSession,
     core: ArcFlowCore,
     runtime: RuntimeState,
     preview_inner: Arc<Mutex<PreviewPlaybackInner>>,
@@ -1451,6 +1527,10 @@ fn spawn_preview_playback_loop(
 ) {
     tauri::async_runtime::spawn(async move {
         loop {
+            let Some(session) = current_preview_session(&preview_inner, id) else {
+                break;
+            };
+
             let request = {
                 let mut sequences = runtime
                     .preview_sequences
@@ -1494,6 +1574,23 @@ fn spawn_preview_playback_loop(
             }
         }
     });
+}
+
+fn current_preview_session(
+    preview_inner: &Arc<Mutex<PreviewPlaybackInner>>,
+    id: u64,
+) -> Option<CoyoteV3PreviewSession> {
+    let inner = preview_inner
+        .lock()
+        .expect("preview playback state mutex poisoned");
+    let running = inner.running.as_ref().filter(|running| running.id == id)?;
+
+    CoyoteV3PreviewSession::new(
+        running.device_id.clone(),
+        running.channel_a_strength,
+        running.channel_b_strength,
+    )
+    .ok()
 }
 
 fn cancel_preview_playback(state: &PreviewPlaybackState, events: &RuntimeEventLog) {
@@ -2204,6 +2301,7 @@ where
             submit_preview_window,
             preview_playback_status,
             start_preview_playback,
+            update_preview_playback,
             stop_preview_playback,
             external_control_status,
             start_external_control,
@@ -2971,6 +3069,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn preview_update_external_request_updates_backend_session() {
+        let (runtime, core) = runtime_state_with_core();
+        let preview_state = PreviewPlaybackState::default();
+        let session = session_with(vec![Capability::WaveControl]);
+        core.attach_output_device(DeviceId::new("coyote-v3"))
+            .unwrap();
+        let start = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(24),
+            WAVE_PREVIEW_START_METHOD,
+            Some(serde_json::json!({
+                "deviceId": "coyote-v3",
+                "channelAStrength": 4,
+                "channelBStrength": 0
+            })),
+        );
+        let update = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(25),
+            WAVE_PREVIEW_UPDATE_METHOD,
+            Some(serde_json::json!({
+                "channelAStrength": 9,
+                "channelBStrength": 1
+            })),
+        );
+
+        execute_preview_playback_external_request(
+            &session,
+            &start,
+            &core,
+            &runtime,
+            &preview_state,
+        )
+        .unwrap();
+        let updated = execute_preview_playback_external_request(
+            &session,
+            &update,
+            &core,
+            &runtime,
+            &preview_state,
+        )
+        .unwrap();
+
+        assert_eq!(updated["running"], true);
+        assert_eq!(updated["channelAStrength"], 9);
+        assert_eq!(updated["channelBStrength"], 1);
+        assert!(runtime
+            .events
+            .list()
+            .iter()
+            .any(|event| event.kind == "wave.preview.updated"));
+        cancel_preview_playback(&preview_state, &runtime.events);
+    }
+
+    #[tokio::test]
     async fn syncs_connected_coyote_v3_devices_to_output_controller() {
         let output_sink = TauriBleOutputSink::spawn(Arc::new(UnsupportedTauriBleTransportProvider));
         let output_controller = Arc::new(CoyoteV3OutputController::new(
@@ -3127,6 +3278,59 @@ mod tests {
                 interval_ms: COYOTE_V3_PREVIEW_INTERVAL_MS,
             }
         );
+    }
+
+    #[test]
+    fn update_preview_playback_session_updates_running_strengths() {
+        let (runtime, _core) = runtime_state_with_core();
+        let state = PreviewPlaybackState::default();
+        let (stop_sender, _stop_receiver) = oneshot::channel();
+        state
+            .inner
+            .lock()
+            .expect("preview playback state mutex poisoned")
+            .running = Some(RunningPreviewPlayback {
+            id: 5,
+            device_id: DeviceId::new("coyote-v3"),
+            channel_a_strength: 2,
+            channel_b_strength: 0,
+            stop_sender: Some(stop_sender),
+        });
+
+        let status = update_preview_playback_session(
+            &runtime,
+            &state,
+            UpdatePreviewPlaybackParams {
+                channel_a_strength: 9,
+                channel_b_strength: 1,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(status.channel_a_strength, 9);
+        assert_eq!(status.channel_b_strength, 1);
+        assert_eq!(runtime.events.list()[0].kind, "wave.preview.updated");
+        let session = current_preview_session(&state.inner, 5).unwrap();
+        assert_eq!(session.channel_a_strength(), 9);
+        assert_eq!(session.channel_b_strength(), 1);
+    }
+
+    #[test]
+    fn update_preview_playback_session_rejects_stopped_preview() {
+        let (runtime, _core) = runtime_state_with_core();
+        let state = PreviewPlaybackState::default();
+
+        let error = update_preview_playback_session(
+            &runtime,
+            &state,
+            UpdatePreviewPlaybackParams {
+                channel_a_strength: 1,
+                channel_b_strength: 0,
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("not running"));
     }
 
     #[test]
