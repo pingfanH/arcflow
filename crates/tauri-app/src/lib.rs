@@ -97,6 +97,7 @@ struct PluginRuntimeState {
 const RUNTIME_STATUS_METHOD: &str = "runtime.status";
 const RUNTIME_EVENTS_METHOD: &str = "runtime.events";
 const RUNTIME_PLUGINS_METHOD: &str = "runtime.plugins";
+const DEVICE_SCAN_METHOD: &str = "device.scan";
 const DEVICE_CONNECT_METHOD: &str = "device.connect";
 const DEVICE_DISCONNECT_METHOD: &str = "device.disconnect";
 const PLUGIN_INVOKE_HOOK_METHOD: &str = "plugin.invokeHook";
@@ -572,16 +573,7 @@ async fn scan_devices(
     state: tauri::State<'_, CoreState>,
     runtime_state: tauri::State<'_, RuntimeState>,
 ) -> Result<DeviceScanResponse, String> {
-    let scan = state
-        .core
-        .scan_devices()
-        .await
-        .map_err(|error| error.to_string())?;
-
-    sync_active_coyote_v3_output_devices(&runtime_state, &scan);
-    log_ble_scan_diagnostics(&runtime_state).await;
-
-    Ok(device_scan_response(scan))
+    scan_devices_and_sync(&state.core, &runtime_state).await
 }
 
 #[tauri::command]
@@ -1060,6 +1052,16 @@ fn external_request_handler(
                 };
             }
 
+            if request.method == DEVICE_SCAN_METHOD {
+                let response =
+                    execute_device_scan_external_request(&session, &core, &runtime).await;
+
+                return match response {
+                    Ok(result) => JsonRpcResponse::ok(id, result),
+                    Err(error) => JsonRpcResponse::error(id, error),
+                };
+            }
+
             if request.method == DEVICE_CONNECT_METHOD {
                 let response =
                     execute_device_connect_external_request(&session, &request, &core, &runtime)
@@ -1141,6 +1143,18 @@ fn is_preview_playback_external_request(request: &JsonRpcRequest) -> bool {
         request.method.as_str(),
         WAVE_PREVIEW_STATUS_METHOD | WAVE_PREVIEW_START_METHOD | WAVE_PREVIEW_STOP_METHOD
     )
+}
+
+async fn execute_device_scan_external_request(
+    session: &ClientSession,
+    core: &ArcFlowCore,
+    runtime: &RuntimeState,
+) -> Result<serde_json::Value, RpcError> {
+    authorize_external_capability(session, DEVICE_SCAN_METHOD, Capability::DeviceRead)?;
+    scan_devices_and_sync(core, runtime)
+        .await
+        .and_then(|response| serde_json::to_value(response).map_err(|error| error.to_string()))
+        .map_err(|error| RpcError::new(-32000, error))
 }
 
 async fn execute_device_connect_external_request(
@@ -1509,6 +1523,21 @@ fn runtime_status_from_state(runtime: &RuntimeState, loaded_plugin_count: usize)
         ble_output_failed: stats.failed,
         loaded_plugin_count,
     }
+}
+
+async fn scan_devices_and_sync(
+    core: &ArcFlowCore,
+    runtime: &RuntimeState,
+) -> Result<DeviceScanResponse, String> {
+    let scan = core
+        .scan_devices()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    sync_active_coyote_v3_output_devices(runtime, &scan);
+    log_ble_scan_diagnostics(runtime).await;
+
+    Ok(device_scan_response(scan))
 }
 
 async fn connect_device_and_scan(
@@ -2451,6 +2480,35 @@ mod tests {
 
         assert_eq!(response["events"][0]["kind"], "runtime.ready");
         assert_eq!(response["events"][0]["message"], "runtime ready");
+    }
+
+    #[tokio::test]
+    async fn device_scan_external_request_requires_device_read() {
+        let (runtime, core) = runtime_state_with_core();
+        let session = session_with(vec![Capability::WaveControl]);
+
+        let error = execute_device_scan_external_request(&session, &core, &runtime)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, -32000);
+        assert!(error.message.contains("device.read"));
+        assert!(error.message.contains(DEVICE_SCAN_METHOD));
+    }
+
+    #[tokio::test]
+    async fn device_scan_external_request_returns_scan() {
+        let provider = Arc::new(ConnectingBleProvider::new(Some(88)));
+        let (runtime, core) = runtime_state_with_platform_provider(provider);
+        let session = session_with(vec![Capability::DeviceRead]);
+
+        let response = execute_device_scan_external_request(&session, &core, &runtime)
+            .await
+            .unwrap();
+
+        assert_eq!(response["adapterStatus"], "ready");
+        assert_eq!(response["devices"][0]["id"], "coyote-v3");
+        assert_eq!(response["devices"][0]["connected"], false);
     }
 
     #[tokio::test]

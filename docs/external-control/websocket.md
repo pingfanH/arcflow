@@ -102,6 +102,22 @@ Successful responses include `result`; failed responses include `error`.
 
 ## Methods
 
+### `device.scan`
+
+Required capability: `device.read`
+
+Refreshes the Rust-owned BLE scan and synchronizes the Coyote V3 output-device
+set. The response has the same shape as `scan_devices` in the Tauri IPC
+surface.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "device.scan"
+}
+```
+
 ### `device.status`
 
 Required capability: `device.read`
@@ -109,7 +125,7 @@ Required capability: `device.read`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 1,
+  "id": 2,
   "method": "device.status",
   "params": {
     "deviceId": "coyote-v3"
@@ -129,7 +145,7 @@ in the Tauri IPC surface.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 2,
+  "id": 3,
   "method": "device.connect",
   "params": {
     "deviceId": "coyote-v3"
@@ -148,7 +164,7 @@ the Rust device scan.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 3,
+  "id": 4,
   "method": "device.disconnect",
   "params": {
     "deviceId": "coyote-v3"
@@ -163,7 +179,7 @@ Required capability: `wave.control`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 4,
+  "id": 5,
   "method": "wave.stop",
   "params": {
     "deviceId": "coyote-v3"
@@ -180,7 +196,7 @@ Returns whether the Rust-owned preview playback session is running.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 5,
+  "id": 6,
   "method": "wave.previewStatus"
 }
 ```
@@ -196,7 +212,7 @@ preview playback.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 6,
+  "id": 7,
   "method": "wave.startPreview",
   "params": {
     "deviceId": "coyote-v3",
@@ -215,7 +231,7 @@ Stops the preview session and sends a stop-output command through Rust Core.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 7,
+  "id": 8,
   "method": "wave.stopPreview"
 }
 ```
@@ -229,7 +245,7 @@ Marks a device as eligible for wave output writes.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 8,
+  "id": 9,
   "method": "device.activateOutput",
   "params": {
     "deviceId": "coyote-v3"
@@ -248,7 +264,7 @@ Removes a device from wave output writes.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 9,
+  "id": 10,
   "method": "device.deactivateOutput",
   "params": {
     "deviceId": "coyote-v3"
@@ -268,7 +284,7 @@ four points or `null`/omitted to disable that channel.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 10,
+  "id": 11,
   "method": "wave.submitWindow",
   "params": {
     "deviceId": "coyote-v3",
@@ -620,6 +636,9 @@ socket.addEventListener("message", async function onHello(event) {
   socket.removeEventListener("message", onHello);
 
   console.log("granted", hello.grantedCapabilities);
+
+  const scan = await request("device.scan");
+  console.log("scan", scan);
 
   const status = await request("device.status", { deviceId: "coyote-v3" });
   console.log("device", status);
