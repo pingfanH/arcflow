@@ -59,6 +59,23 @@ impl TauriBleScanDiagnostics {
             TauriBlePeripheralDiagnostic::new(local_name, service_uuids),
         );
     }
+
+    /// Merges another scan diagnostic snapshot into this one.
+    pub fn merge(&mut self, other: Self) {
+        self.discovered_peripherals += other.discovered_peripherals;
+        self.inspected_peripherals += other.inspected_peripherals;
+        self.matched_advertisements += other.matched_advertisements;
+        self.skipped_missing_properties += other.skipped_missing_properties;
+        self.skipped_unknown_peripherals += other.skipped_unknown_peripherals;
+
+        for sample in other.matched_samples {
+            push_limited_sample(&mut self.matched_samples, sample);
+        }
+
+        for sample in other.skipped_unknown_samples {
+            push_limited_sample(&mut self.skipped_unknown_samples, sample);
+        }
+    }
 }
 
 /// Diagnostic details for one sampled BLE peripheral.
@@ -271,5 +288,24 @@ mod tests {
         assert_eq!(diagnostics.discovered_peripherals, 8);
         assert_eq!(diagnostics.skipped_unknown_peripherals, 8);
         assert_eq!(diagnostics.skipped_unknown_samples.len(), 5);
+    }
+
+    #[test]
+    fn scan_diagnostics_merge_preserves_sample_limits() {
+        let mut primary = TauriBleScanDiagnostics::new(2);
+        primary.record_matched(Some("47L121001"), &[0x180C]);
+
+        let mut fallback = TauriBleScanDiagnostics::new(8);
+        fallback.skipped_missing_properties = 1;
+        for index in 0..8 {
+            fallback.record_matched(Some(&format!("Coyote {index}")), &[0x180C]);
+        }
+
+        primary.merge(fallback);
+
+        assert_eq!(primary.discovered_peripherals, 10);
+        assert_eq!(primary.matched_advertisements, 9);
+        assert_eq!(primary.skipped_missing_properties, 1);
+        assert_eq!(primary.matched_samples.len(), 5);
     }
 }

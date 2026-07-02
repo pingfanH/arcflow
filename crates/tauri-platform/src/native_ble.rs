@@ -3,8 +3,8 @@
 use std::{collections::HashMap, sync::Mutex as StdMutex, time::Duration};
 
 use arcflow_core::{
-    BleAdvertisement, BleCharacteristic, CoreError, DeviceId, COYOTE_V2_SERVICE_UUID,
-    COYOTE_V3_SERVICE_UUID,
+    bluetooth_base_uuid, BleAdvertisement, BleCharacteristic, CoreError, DeviceId,
+    COYOTE_V2_SERVICE_UUID, COYOTE_V3_SERVICE_UUID,
 };
 use arcflow_protocol::coyote::{V2_DEVICE_NAME, V3_DEVICE_NAME};
 use async_trait::async_trait;
@@ -22,6 +22,12 @@ use crate::{
 };
 
 const DEFAULT_SCAN_DURATION: Duration = Duration::from_secs(5);
+
+#[derive(Debug)]
+struct NativeBleAdvertisementScan {
+    advertisements: Vec<BleAdvertisement>,
+    diagnostics: TauriBleScanDiagnostics,
+}
 
 /// Desktop BLE provider used by Tauri shells on platforms supported by `btleplug`.
 #[derive(Debug)]
@@ -72,6 +78,11 @@ impl NativeBlePlatformProvider {
                 return Ok(peripheral);
             }
         }
+        for peripheral in self.scan_coyote_service_peripherals(&adapter).await? {
+            if peripheral.id().to_string() == device_id.as_str() {
+                return Ok(peripheral);
+            }
+        }
 
         Err(CoreError::Transport(format!(
             "BLE device `{}` was not found",
@@ -80,10 +91,24 @@ impl NativeBlePlatformProvider {
     }
 
     async fn scan_peripherals(&self, adapter: &Adapter) -> Result<Vec<Peripheral>, CoreError> {
-        adapter
-            .start_scan(ScanFilter::default())
+        self.scan_peripherals_with_filter(adapter, ScanFilter::default())
             .await
-            .map_err(transport_error)?;
+    }
+
+    async fn scan_coyote_service_peripherals(
+        &self,
+        adapter: &Adapter,
+    ) -> Result<Vec<Peripheral>, CoreError> {
+        self.scan_peripherals_with_filter(adapter, coyote_scan_filter())
+            .await
+    }
+
+    async fn scan_peripherals_with_filter(
+        &self,
+        adapter: &Adapter,
+        filter: ScanFilter,
+    ) -> Result<Vec<Peripheral>, CoreError> {
+        adapter.start_scan(filter).await.map_err(transport_error)?;
         sleep(self.scan_duration).await;
 
         let peripherals = adapter.peripherals().await.map_err(transport_error);
@@ -94,6 +119,61 @@ impl NativeBlePlatformProvider {
             (Err(error), _) => Err(error),
             (Ok(_), Err(error)) => Err(error),
         }
+    }
+
+    async fn scan_advertisements(
+        &self,
+        peripherals: Vec<Peripheral>,
+    ) -> Result<NativeBleAdvertisementScan, CoreError> {
+        let mut advertisements = Vec::new();
+        let mut diagnostics = TauriBleScanDiagnostics::new(peripherals.len());
+
+        for peripheral in peripherals {
+            let Some(properties) = peripheral.properties().await.map_err(transport_error)? else {
+                diagnostics.skipped_missing_properties += 1;
+                continue;
+            };
+            diagnostics.inspected_peripherals += 1;
+            let service_uuids = properties
+                .services
+                .iter()
+                .filter_map(short_uuid)
+                .collect::<Vec<_>>();
+            let Some(service_uuids) =
+                coyote_service_uuids(service_uuids.clone(), properties.local_name.as_deref())
+            else {
+                diagnostics.record_unknown(properties.local_name.as_deref(), &service_uuids);
+                continue;
+            };
+            diagnostics.record_matched(properties.local_name.as_deref(), &service_uuids);
+
+            let connected = peripheral.is_connected().await.unwrap_or(false);
+            let battery_percent = if connected {
+                peripheral
+                    .discover_services()
+                    .await
+                    .map_err(transport_error)?;
+                self.read_battery_from_peripheral(&peripheral).await?
+            } else {
+                None
+            };
+
+            advertisements.push(
+                BleAdvertisement::new(
+                    DeviceId::new(peripheral.id().to_string()),
+                    properties.local_name,
+                    properties.rssi,
+                    service_uuids,
+                )
+                .with_connected(connected)
+                .with_battery_percent(battery_percent),
+            );
+        }
+
+        Ok(NativeBleAdvertisementScan {
+            advertisements,
+            diagnostics,
+        })
     }
 
     async fn ensure_connected(&self, device_id: &DeviceId) -> Result<Peripheral, CoreError> {
@@ -165,7 +245,6 @@ impl TauriBleDiscoveryProvider for NativeBlePlatformProvider {
             Err(error) => return Err(error),
         };
 
-        let mut advertisements = Vec::new();
         let peripherals = match self.scan_peripherals(&adapter).await {
             Ok(peripherals) => peripherals,
             Err(error) if is_powered_off_error(&error) => {
@@ -176,56 +255,32 @@ impl TauriBleDiscoveryProvider for NativeBlePlatformProvider {
             }
             Err(error) => return Err(error),
         };
-        let mut diagnostics = TauriBleScanDiagnostics::new(peripherals.len());
+        let mut scan = self.scan_advertisements(peripherals).await?;
 
-        for peripheral in peripherals {
-            let Some(properties) = peripheral.properties().await.map_err(transport_error)? else {
-                diagnostics.skipped_missing_properties += 1;
-                continue;
+        if scan.advertisements.is_empty() {
+            let fallback_peripherals = match self.scan_coyote_service_peripherals(&adapter).await {
+                Ok(peripherals) => peripherals,
+                Err(error) if is_powered_off_error(&error) => {
+                    return Ok(TauriBleDiscoveryState::PoweredOff);
+                }
+                Err(error) if is_permission_denied_error(&error) => {
+                    return Ok(TauriBleDiscoveryState::PermissionDenied);
+                }
+                Err(error) => return Err(error),
             };
-            diagnostics.inspected_peripherals += 1;
-            let service_uuids = properties
-                .services
-                .iter()
-                .filter_map(short_uuid)
-                .collect::<Vec<_>>();
-            let Some(service_uuids) =
-                coyote_service_uuids(service_uuids.clone(), properties.local_name.as_deref())
-            else {
-                diagnostics.record_unknown(properties.local_name.as_deref(), &service_uuids);
-                continue;
-            };
-            diagnostics.record_matched(properties.local_name.as_deref(), &service_uuids);
-
-            let connected = peripheral.is_connected().await.unwrap_or(false);
-            let battery_percent = if connected {
-                peripheral
-                    .discover_services()
-                    .await
-                    .map_err(transport_error)?;
-                self.read_battery_from_peripheral(&peripheral).await?
-            } else {
-                None
-            };
-
-            advertisements.push(
-                BleAdvertisement::new(
-                    DeviceId::new(peripheral.id().to_string()),
-                    properties.local_name,
-                    properties.rssi,
-                    service_uuids,
-                )
-                .with_connected(connected)
-                .with_battery_percent(battery_percent),
-            );
+            let fallback_scan = self.scan_advertisements(fallback_peripherals).await?;
+            scan.diagnostics.merge(fallback_scan.diagnostics);
+            scan.advertisements = fallback_scan.advertisements;
         }
 
         *self
             .scan_diagnostics
             .lock()
-            .expect("native BLE scan diagnostics mutex poisoned") = Some(diagnostics);
+            .expect("native BLE scan diagnostics mutex poisoned") = Some(scan.diagnostics);
 
-        Ok(TauriBleDiscoveryState::Ready { advertisements })
+        Ok(TauriBleDiscoveryState::Ready {
+            advertisements: scan.advertisements,
+        })
     }
 }
 
@@ -320,6 +375,24 @@ fn short_uuid(uuid: &Uuid) -> Option<u16> {
     };
 
     u16::from_str_radix(hex, 16).ok()
+}
+
+fn coyote_scan_filter() -> ScanFilter {
+    ScanFilter {
+        services: coyote_service_filter_uuids(),
+    }
+}
+
+fn coyote_service_filter_uuids() -> Vec<Uuid> {
+    [COYOTE_V2_SERVICE_UUID, COYOTE_V3_SERVICE_UUID]
+        .into_iter()
+        .map(bluetooth_service_uuid)
+        .collect()
+}
+
+fn bluetooth_service_uuid(short_uuid: u16) -> Uuid {
+    Uuid::parse_str(&bluetooth_base_uuid(short_uuid))
+        .expect("core Bluetooth service UUID formatting must be valid")
 }
 
 fn coyote_service_uuids(mut service_uuids: Vec<u16>, local_name: Option<&str>) -> Option<Vec<u16>> {
@@ -417,6 +490,19 @@ mod tests {
         assert_eq!(
             coyote_service_uuids(vec![COYOTE_V2_SERVICE_UUID], Some("Other")),
             Some(vec![COYOTE_V2_SERVICE_UUID])
+        );
+    }
+
+    #[test]
+    fn builds_coyote_service_scan_filter() {
+        let filter = coyote_scan_filter();
+
+        assert_eq!(
+            filter.services,
+            vec![
+                bluetooth_service_uuid(COYOTE_V2_SERVICE_UUID),
+                bluetooth_service_uuid(COYOTE_V3_SERVICE_UUID)
+            ]
         );
     }
 
