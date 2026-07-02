@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "dev.arcflow.mobile",
   "build": {
-    "beforeDevCommand": "pnpm --filter @arcflow/desktop dev",
+    "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm --filter @arcflow/desktop build",
-    "frontendDist": "../../desktop/dist"
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
   },
   "app": {
     "windows": [

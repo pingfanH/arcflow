@@ -5,8 +5,10 @@ ArcFlow mobile targets use Tauri 2 and live in `apps/mobile/src-tauri`.
 The mobile shell is intentionally thin:
 
 - `apps/mobile/src-tauri` owns the mobile Tauri config and platform entrypoint.
+- `apps/mobile/src` owns the mobile Vite entrypoint and renders the shared
+  React app with the mobile style profile.
 - `crates/tauri-app` owns the shared Tauri commands, state wiring, and Rust Core integration.
-- The React UI is built from `apps/desktop` and reused by the mobile shell.
+- `packages/client` owns the shared React UI used by desktop and mobile.
 - Mobile-specific behavior should be limited to shell style profiles such as
   navigation placement, density, and safe-area padding.
 

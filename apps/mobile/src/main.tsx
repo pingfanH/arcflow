@@ -4,6 +4,6 @@ import { App } from "@arcflow/client";
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <App />
+    <App platform="mobile" />
   </React.StrictMode>,
 );

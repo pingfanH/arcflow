@@ -283,7 +283,11 @@ function useFrontendPlatform(): FrontendPlatform {
   return shellPlatform === "mobile" || viewportPlatform === "mobile" ? "mobile" : "desktop";
 }
 
-function App() {
+export type AppProps = {
+  platform?: FrontendPlatform;
+};
+
+function App({ platform }: AppProps = {}) {
   const [activeTab, setActiveTab] = useState<(typeof navItems)[number]["id"]>("device");
   const [status, setStatus] = useState<AppStatus | null>(null);
   const [externalStatus, setExternalStatus] =
@@ -311,7 +315,9 @@ function App() {
   const [deviceOnline, setDeviceOnline] = useState(false);
   const [channelA, setChannelA] = useState(12);
   const [channelB, setChannelB] = useState(0);
-  const frontendPlatform = useFrontendPlatform();
+  const detectedPlatform = useFrontendPlatform();
+  const frontendPlatform =
+    platform === "mobile" || detectedPlatform === "mobile" ? "mobile" : "desktop";
   const shell = shellClasses[frontendPlatform];
 
   const refreshExternalStatus = useCallback(() => {
@@ -421,7 +427,7 @@ function App() {
   };
 
   const applyOutputDeviceActivation = (result: OutputDeviceActivationResponse) => {
-    setRuntimeStatus((current) => ({
+    setRuntimeStatus((current: RuntimeStatus | null) => ({
       ...(current ?? fallbackRuntimeStatus),
       activeOutputDevices: result.activeOutputDevices,
     }));
@@ -649,7 +655,9 @@ function App() {
     invoke<ScriptsResponse>("delete_script", { scriptId })
       .then((result) => {
         setScripts(result);
-        setLastScriptRun((current) => (current?.scriptId === scriptId ? null : current));
+        setLastScriptRun((current: ScriptRunResponse | null) =>
+          current?.scriptId === scriptId ? null : current,
+        );
       })
       .catch(refreshScripts)
       .finally(() => setScriptBusy(false));
@@ -659,7 +667,8 @@ function App() {
     () => navItems.find((item) => item.id === activeTab)?.label ?? "Device",
     [activeTab],
   );
-  const connectedDeviceCount = lastScan?.devices.filter((device) => device.connected).length ?? 0;
+  const connectedDeviceCount =
+    lastScan?.devices.filter((device: DeviceSummary) => device.connected).length ?? 0;
   const activeOutputDeviceIds = runtimeStatus?.activeOutputDevices ?? [];
   const playing = previewStatus.running;
   const deviceSubtitle = useMemo(() => {

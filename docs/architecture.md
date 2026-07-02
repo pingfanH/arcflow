@@ -77,12 +77,13 @@ Desktop and mobile Tauri shells are intentionally thin. Each shell owns its
 
 ## Shared Frontend Shell
 
-Desktop and mobile reuse the same React application. The mobile Tauri config
-builds and serves the desktop frontend bundle instead of maintaining a second
-React tree. Platform differences belong in shell-level style profiles such as
-navigation placement, spacing, sticky headers, and safe-area padding. Device
-state, commands, storage, plugin management, plugin automations, and plugin
-bridge UI must stay in shared components and shared hooks.
+Desktop and mobile reuse the same React application from `packages/client`.
+Each shell has its own Vite entrypoint and Tauri `frontendDist`, but both
+render the shared `App` component. Platform differences belong in shell-level
+style profiles such as navigation placement, spacing, sticky headers, and
+safe-area padding. Device state, commands, storage, plugin management, plugin
+automations, and plugin bridge UI must stay in shared components and shared
+hooks.
 
 The shared Tauri runtime exposes `frontend_platform` so React can select a
 desktop or mobile style profile without branching business logic. Browser

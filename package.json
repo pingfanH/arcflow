@@ -9,6 +9,6 @@
     "dev:mobile": "pnpm --filter @arcflow/mobile tauri dev",
     "android:dev": "pnpm --filter @arcflow/mobile tauri android dev",
     "ios:dev": "pnpm --filter @arcflow/mobile tauri ios dev",
-    "check:frontend": "pnpm --filter @arcflow/desktop build"
+    "check:frontend": "pnpm --filter @arcflow/desktop build && pnpm --filter @arcflow/mobile build"
   }
 }
