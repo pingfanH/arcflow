@@ -10,6 +10,86 @@ use crate::{
     TauriBleTransportProvider, TauriBleWriteRequest,
 };
 
+const BLE_SCAN_SAMPLE_LIMIT: usize = 5;
+
+/// Summary of the most recent platform BLE scan.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TauriBleScanDiagnostics {
+    /// Number of peripherals returned by the platform adapter.
+    pub discovered_peripherals: usize,
+    /// Number of peripherals whose properties were readable.
+    pub inspected_peripherals: usize,
+    /// Number of peripherals accepted as ArcFlow-compatible advertisements.
+    pub matched_advertisements: usize,
+    /// Number of peripherals skipped because the platform exposed no properties.
+    pub skipped_missing_properties: usize,
+    /// Number of peripherals skipped because neither service UUID nor local name
+    /// matched a known Coyote device.
+    pub skipped_unknown_peripherals: usize,
+    /// Small sample of matched peripherals for runtime diagnostics.
+    pub matched_samples: Vec<TauriBlePeripheralDiagnostic>,
+    /// Small sample of unknown peripherals for runtime diagnostics.
+    pub skipped_unknown_samples: Vec<TauriBlePeripheralDiagnostic>,
+}
+
+impl TauriBleScanDiagnostics {
+    /// Constructs an empty diagnostic snapshot for one scan.
+    #[must_use]
+    pub fn new(discovered_peripherals: usize) -> Self {
+        Self {
+            discovered_peripherals,
+            ..Self::default()
+        }
+    }
+
+    /// Records one matched Coyote peripheral sample.
+    pub fn record_matched(&mut self, local_name: Option<&str>, service_uuids: &[u16]) {
+        self.matched_advertisements += 1;
+        push_limited_sample(
+            &mut self.matched_samples,
+            TauriBlePeripheralDiagnostic::new(local_name, service_uuids),
+        );
+    }
+
+    /// Records one skipped unknown peripheral sample.
+    pub fn record_unknown(&mut self, local_name: Option<&str>, service_uuids: &[u16]) {
+        self.skipped_unknown_peripherals += 1;
+        push_limited_sample(
+            &mut self.skipped_unknown_samples,
+            TauriBlePeripheralDiagnostic::new(local_name, service_uuids),
+        );
+    }
+}
+
+/// Diagnostic details for one sampled BLE peripheral.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TauriBlePeripheralDiagnostic {
+    /// Advertised local name if present.
+    pub local_name: Option<String>,
+    /// Advertised service short UUIDs after platform UUID conversion.
+    pub service_uuids: Vec<u16>,
+}
+
+impl TauriBlePeripheralDiagnostic {
+    /// Constructs a sampled BLE peripheral diagnostic.
+    #[must_use]
+    pub fn new(local_name: Option<&str>, service_uuids: &[u16]) -> Self {
+        Self {
+            local_name: local_name.map(ToOwned::to_owned),
+            service_uuids: service_uuids.to_vec(),
+        }
+    }
+}
+
+fn push_limited_sample(
+    samples: &mut Vec<TauriBlePeripheralDiagnostic>,
+    sample: TauriBlePeripheralDiagnostic,
+) {
+    if samples.len() < BLE_SCAN_SAMPLE_LIMIT {
+        samples.push(sample);
+    }
+}
+
 /// Combined provider implemented by a Tauri 2 BLE backend.
 ///
 /// Desktop and mobile shells should inject one provider that owns both device
@@ -27,6 +107,11 @@ pub trait TauriBlePlatformProvider:
 
     /// Disconnects a connected BLE device if the backend owns that connection.
     async fn disconnect_device(&self, device_id: &DeviceId) -> Result<(), CoreError>;
+
+    /// Returns diagnostics captured during the most recent platform scan.
+    async fn scan_diagnostics(&self) -> Option<TauriBleScanDiagnostics> {
+        None
+    }
 
     /// Reads a connected device battery percentage when available.
     async fn read_battery_percent(&self, device_id: &DeviceId) -> Result<Option<u8>, CoreError>;
@@ -173,5 +258,18 @@ mod tests {
 
         assert!(format!("{discovery:?}").contains("UnsupportedTauriBlePlatformProvider"));
         assert!(format!("{transport:?}").contains("UnsupportedTauriBlePlatformProvider"));
+    }
+
+    #[test]
+    fn scan_diagnostics_samples_are_limited() {
+        let mut diagnostics = TauriBleScanDiagnostics::new(8);
+
+        for index in 0..8 {
+            diagnostics.record_unknown(Some(&format!("device-{index}")), &[0x180F]);
+        }
+
+        assert_eq!(diagnostics.discovered_peripherals, 8);
+        assert_eq!(diagnostics.skipped_unknown_peripherals, 8);
+        assert_eq!(diagnostics.skipped_unknown_samples.len(), 5);
     }
 }

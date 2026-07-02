@@ -27,7 +27,8 @@ use arcflow_storage::Storage;
 use arcflow_tauri_platform::NativeBlePlatformProvider;
 use arcflow_tauri_platform::{
     TauriBleDiscoveryController, TauriBleDiscoveryProvider, TauriBleOutputEvent,
-    TauriBleOutputSink, TauriBlePlatformProvider, TauriBleTransportProvider,
+    TauriBleOutputSink, TauriBlePeripheralDiagnostic, TauriBlePlatformProvider,
+    TauriBleScanDiagnostics, TauriBleTransportProvider,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -578,6 +579,7 @@ async fn scan_devices(
         .map_err(|error| error.to_string())?;
 
     sync_active_coyote_v3_output_devices(&runtime_state, &scan);
+    log_ble_scan_diagnostics(&runtime_state).await;
 
     Ok(device_scan_response(scan))
 }
@@ -1579,6 +1581,70 @@ fn sync_active_coyote_v3_output_devices(runtime: &RuntimeState, scan: &DeviceSca
     }
 }
 
+async fn log_ble_scan_diagnostics(runtime: &RuntimeState) {
+    let Some(diagnostics) = runtime.ble_platform_provider.scan_diagnostics().await else {
+        return;
+    };
+
+    runtime.events.push(
+        "device.scan.diagnostics",
+        ble_scan_diagnostics_message(&diagnostics),
+    );
+}
+
+fn ble_scan_diagnostics_message(diagnostics: &TauriBleScanDiagnostics) -> String {
+    let mut message = format!(
+        "native BLE scan saw {} peripherals, inspected {}, matched {}, skipped unknown {}, missing properties {}",
+        diagnostics.discovered_peripherals,
+        diagnostics.inspected_peripherals,
+        diagnostics.matched_advertisements,
+        diagnostics.skipped_unknown_peripherals,
+        diagnostics.skipped_missing_properties
+    );
+
+    let matched = peripheral_samples_label(&diagnostics.matched_samples);
+    if !matched.is_empty() {
+        message.push_str("; matched: ");
+        message.push_str(&matched);
+    }
+
+    let skipped = peripheral_samples_label(&diagnostics.skipped_unknown_samples);
+    if !skipped.is_empty() {
+        message.push_str("; skipped: ");
+        message.push_str(&skipped);
+    }
+
+    message
+}
+
+fn peripheral_samples_label(samples: &[TauriBlePeripheralDiagnostic]) -> String {
+    samples
+        .iter()
+        .map(peripheral_sample_label)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn peripheral_sample_label(sample: &TauriBlePeripheralDiagnostic) -> String {
+    let name = sample
+        .local_name
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("unnamed");
+    let services = if sample.service_uuids.is_empty() {
+        "no services".to_owned()
+    } else {
+        sample
+            .service_uuids
+            .iter()
+            .map(|service_uuid| format!("0x{service_uuid:04X}"))
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+
+    format!("{name} [{services}]")
+}
+
 async fn loaded_plugin_count(plugin_runtime: &PluginRuntimeState) -> usize {
     plugin_runtime
         .controller
@@ -2151,6 +2217,25 @@ mod tests {
         )
         .unwrap();
         root
+    }
+
+    #[test]
+    fn ble_scan_diagnostics_message_includes_counts_and_samples() {
+        let mut diagnostics = TauriBleScanDiagnostics::new(3);
+        diagnostics.inspected_peripherals = 2;
+        diagnostics.skipped_missing_properties = 1;
+        diagnostics.record_matched(Some("47L121000"), &[arcflow_core::COYOTE_V3_SERVICE_UUID]);
+        diagnostics.record_unknown(Some("Keyboard"), &[]);
+
+        let message = ble_scan_diagnostics_message(&diagnostics);
+
+        assert!(message.contains("saw 3 peripherals"));
+        assert!(message.contains("inspected 2"));
+        assert!(message.contains("matched 1"));
+        assert!(message.contains("skipped unknown 1"));
+        assert!(message.contains("missing properties 1"));
+        assert!(message.contains("matched: 47L121000 [0x180C]"));
+        assert!(message.contains("skipped: Keyboard [no services]"));
     }
 
     #[tokio::test]

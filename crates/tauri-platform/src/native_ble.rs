@@ -1,6 +1,6 @@
 //! Native desktop BLE provider backed by `btleplug`.
 
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Mutex as StdMutex, time::Duration};
 
 use arcflow_core::{
     BleAdvertisement, BleCharacteristic, CoreError, DeviceId, COYOTE_V2_SERVICE_UUID,
@@ -17,8 +17,8 @@ use uuid::Uuid;
 
 use crate::{
     TauriBleConnectionState, TauriBleDiscoveryProvider, TauriBleDiscoveryState,
-    TauriBlePlatformProvider, TauriBleSubscriptionRequest, TauriBleTransportProvider,
-    TauriBleWriteRequest,
+    TauriBlePlatformProvider, TauriBleScanDiagnostics, TauriBleSubscriptionRequest,
+    TauriBleTransportProvider, TauriBleWriteRequest,
 };
 
 const DEFAULT_SCAN_DURATION: Duration = Duration::from_secs(5);
@@ -28,6 +28,7 @@ const DEFAULT_SCAN_DURATION: Duration = Duration::from_secs(5);
 pub struct NativeBlePlatformProvider {
     scan_duration: Duration,
     connections: Mutex<HashMap<DeviceId, Peripheral>>,
+    scan_diagnostics: StdMutex<Option<TauriBleScanDiagnostics>>,
 }
 
 impl NativeBlePlatformProvider {
@@ -37,6 +38,7 @@ impl NativeBlePlatformProvider {
         Self {
             scan_duration: DEFAULT_SCAN_DURATION,
             connections: Mutex::new(HashMap::new()),
+            scan_diagnostics: StdMutex::new(None),
         }
     }
 
@@ -46,6 +48,7 @@ impl NativeBlePlatformProvider {
         Self {
             scan_duration,
             connections: Mutex::new(HashMap::new()),
+            scan_diagnostics: StdMutex::new(None),
         }
     }
 
@@ -160,20 +163,27 @@ impl TauriBleDiscoveryProvider for NativeBlePlatformProvider {
         };
 
         let mut advertisements = Vec::new();
-        for peripheral in self.scan_peripherals(&adapter).await? {
+        let peripherals = self.scan_peripherals(&adapter).await?;
+        let mut diagnostics = TauriBleScanDiagnostics::new(peripherals.len());
+
+        for peripheral in peripherals {
             let Some(properties) = peripheral.properties().await.map_err(transport_error)? else {
+                diagnostics.skipped_missing_properties += 1;
                 continue;
             };
+            diagnostics.inspected_peripherals += 1;
             let service_uuids = properties
                 .services
                 .iter()
                 .filter_map(short_uuid)
                 .collect::<Vec<_>>();
             let Some(service_uuids) =
-                coyote_service_uuids(service_uuids, properties.local_name.as_deref())
+                coyote_service_uuids(service_uuids.clone(), properties.local_name.as_deref())
             else {
+                diagnostics.record_unknown(properties.local_name.as_deref(), &service_uuids);
                 continue;
             };
+            diagnostics.record_matched(properties.local_name.as_deref(), &service_uuids);
 
             let connected = peripheral.is_connected().await.unwrap_or(false);
             let battery_percent = if connected {
@@ -197,6 +207,11 @@ impl TauriBleDiscoveryProvider for NativeBlePlatformProvider {
                 .with_battery_percent(battery_percent),
             );
         }
+
+        *self
+            .scan_diagnostics
+            .lock()
+            .expect("native BLE scan diagnostics mutex poisoned") = Some(diagnostics);
 
         Ok(TauriBleDiscoveryState::Ready { advertisements })
     }
@@ -257,6 +272,13 @@ impl TauriBlePlatformProvider for NativeBlePlatformProvider {
         }
 
         Ok(())
+    }
+
+    async fn scan_diagnostics(&self) -> Option<TauriBleScanDiagnostics> {
+        self.scan_diagnostics
+            .lock()
+            .expect("native BLE scan diagnostics mutex poisoned")
+            .clone()
     }
 
     async fn read_battery_percent(&self, device_id: &DeviceId) -> Result<Option<u8>, CoreError> {

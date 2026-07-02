@@ -405,6 +405,7 @@ function App() {
         setLastScan(result);
         setDeviceOnline(result.devices.some((device) => device.connected));
         refreshRuntimeStatus();
+        refreshRuntimeEvents();
       })
       .catch(() => {
         setLastScan(emptyDeviceScan);

@@ -16,7 +16,8 @@ pub use ble::{
 #[cfg(feature = "native-ble")]
 pub use native_ble::NativeBlePlatformProvider;
 pub use platform::{
-    TauriBleConnectionState, TauriBlePlatformProvider, UnsupportedTauriBlePlatformProvider,
+    TauriBleConnectionState, TauriBlePeripheralDiagnostic, TauriBlePlatformProvider,
+    TauriBleScanDiagnostics, UnsupportedTauriBlePlatformProvider,
 };
 pub use transport::{
     TauriBleOutputCommand, TauriBleOutputEvent, TauriBleOutputSink, TauriBleOutputStats,
