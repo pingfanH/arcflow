@@ -2092,6 +2092,8 @@ fn spawn_plugin_runtime_restore(storage: Arc<Mutex<Storage>>, plugin_runtime: Pl
 
 fn spawn_runtime_event_listeners(
     events: RuntimeEventLog,
+    output_controller: Arc<CoyoteV3OutputController<TauriBleOutputSink>>,
+    preview_state: PreviewPlaybackState,
     mut script_events: mpsc::UnboundedReceiver<ScriptWorkerEvent>,
     mut output_events: mpsc::UnboundedReceiver<TauriBleOutputEvent>,
 ) {
@@ -2117,21 +2119,46 @@ fn spawn_runtime_event_listeners(
 
     tauri::async_runtime::spawn(async move {
         while let Some(event) = output_events.recv().await {
-            match event {
-                TauriBleOutputEvent::Written {
-                    device_id,
-                    characteristic,
-                } => events.push(
-                    "ble.write",
-                    format!("device `{}` wrote {:?}", device_id.as_str(), characteristic),
-                ),
-                TauriBleOutputEvent::Failed { device_id, error } => events.push(
-                    "ble.write.failed",
-                    format!("device `{}` write failed: {error}", device_id.as_str()),
-                ),
-            }
+            handle_ble_output_event(&events, &output_controller, &preview_state, event);
         }
     });
+}
+
+fn handle_ble_output_event(
+    events: &RuntimeEventLog,
+    output_controller: &CoyoteV3OutputController<TauriBleOutputSink>,
+    preview_state: &PreviewPlaybackState,
+    event: TauriBleOutputEvent,
+) {
+    match event {
+        TauriBleOutputEvent::Written {
+            device_id,
+            characteristic,
+        } => events.push(
+            "ble.write",
+            format!("device `{}` wrote {:?}", device_id.as_str(), characteristic),
+        ),
+        TauriBleOutputEvent::Failed { device_id, error } => {
+            events.push(
+                "ble.write.failed",
+                format!("device `{}` write failed: {error}", device_id.as_str()),
+            );
+
+            let was_active = output_controller.active_devices().contains(&device_id);
+            output_controller.detach_device(&device_id);
+            cancel_preview_playback_for_device(preview_state, events, &device_id);
+
+            if was_active {
+                events.push(
+                    "device.output.detached",
+                    format!(
+                        "device `{}` detached after BLE write failure",
+                        device_id.as_str()
+                    ),
+                );
+            }
+        }
+    }
 }
 
 fn device_scan_response(
@@ -2260,10 +2287,12 @@ where
             let _ = window.set_focus();
         }
     }));
+    let preview_state = PreviewPlaybackState::default();
+    let event_listener_preview_state = preview_state.clone();
 
     builder
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
+        .setup(move |app| {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
             let database_path = app_data_dir.join("arcflow.sqlite3");
@@ -2315,7 +2344,13 @@ where
                 ScriptCompiler::default(),
                 Arc::new(script_queue),
             );
-            spawn_runtime_event_listeners(events.clone(), script_events, output_events);
+            spawn_runtime_event_listeners(
+                events.clone(),
+                Arc::clone(&output_controller),
+                event_listener_preview_state.clone(),
+                script_events,
+                output_events,
+            );
             spawn_plugin_runtime_restore(Arc::clone(&storage), plugin_runtime.clone());
 
             app.manage(StorageState {
@@ -2344,7 +2379,7 @@ where
             Ok(())
         })
         .manage(ExternalControlState::default())
-        .manage(PreviewPlaybackState::default())
+        .manage(preview_state)
         .invoke_handler(tauri::generate_handler![
             app_status,
             frontend_platform,
@@ -3487,6 +3522,45 @@ mod tests {
         assert!(!stopped);
         assert!(preview_playback_status_from_state(&state).running);
         assert!(events.list().is_empty());
+    }
+
+    #[test]
+    fn ble_output_failure_detaches_device_and_stops_preview() {
+        let (runtime, _core) = runtime_state_with_core();
+        let preview_state = PreviewPlaybackState::default();
+        let device_id = DeviceId::new("coyote-v3");
+        let (stop_sender, _stop_receiver) = oneshot::channel();
+        let running = RunningPreviewPlayback {
+            id: 9,
+            device_id: device_id.clone(),
+            channel_a_strength: 10,
+            channel_b_strength: 0,
+            stop_sender: Some(stop_sender),
+        };
+
+        runtime.output_controller.attach_device(device_id.clone());
+        preview_state
+            .inner
+            .lock()
+            .expect("preview playback state mutex poisoned")
+            .running = Some(running);
+
+        handle_ble_output_event(
+            &runtime.events,
+            &runtime.output_controller,
+            &preview_state,
+            TauriBleOutputEvent::Failed {
+                device_id: device_id.clone(),
+                error: "link lost".to_owned(),
+            },
+        );
+
+        assert!(runtime.output_controller.active_devices().is_empty());
+        assert!(!preview_playback_status_from_state(&preview_state).running);
+        let events = runtime.events.list();
+        assert_eq!(events[0].kind, "ble.write.failed");
+        assert_eq!(events[1].kind, "wave.preview.stopped");
+        assert_eq!(events[2].kind, "device.output.detached");
     }
 
     #[test]

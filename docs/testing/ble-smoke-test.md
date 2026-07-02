@@ -143,6 +143,10 @@ The app should open a desktop window and show the Device workspace.
    - The output-device set is empty for that device.
    - A later `Scan` can rediscover the device.
 
+If a BLE write fails while output or preview playback is active, ArcFlow should
+record `ble.write.failed`, detach that device from the output-device set, and
+stop preview playback for that device.
+
 ## Failure Notes
 
 Record these details when a step fails:
