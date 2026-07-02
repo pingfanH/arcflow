@@ -137,6 +137,25 @@ in the Tauri IPC surface.
 }
 ```
 
+### `device.disconnect`
+
+Required capability: `wave.control`
+
+Stops active output for the device, removes it from the output-device set,
+disconnects the BLE session through the Tauri platform provider, and refreshes
+the Rust device scan.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "device.disconnect",
+  "params": {
+    "deviceId": "coyote-v3"
+  }
+}
+```
+
 ### `wave.stop`
 
 Required capability: `wave.control`
@@ -144,7 +163,7 @@ Required capability: `wave.control`
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 3,
+  "id": 4,
   "method": "wave.stop",
   "params": {
     "deviceId": "coyote-v3"
@@ -161,7 +180,7 @@ Returns whether the Rust-owned preview playback session is running.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 4,
+  "id": 5,
   "method": "wave.previewStatus"
 }
 ```
@@ -177,7 +196,7 @@ preview playback.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 5,
+  "id": 6,
   "method": "wave.startPreview",
   "params": {
     "deviceId": "coyote-v3",
@@ -196,7 +215,7 @@ Stops the preview session and sends a stop-output command through Rust Core.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 6,
+  "id": 7,
   "method": "wave.stopPreview"
 }
 ```
@@ -210,7 +229,7 @@ Marks a device as eligible for wave output writes.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 7,
+  "id": 8,
   "method": "device.activateOutput",
   "params": {
     "deviceId": "coyote-v3"
@@ -229,7 +248,7 @@ Removes a device from wave output writes.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 8,
+  "id": 9,
   "method": "device.deactivateOutput",
   "params": {
     "deviceId": "coyote-v3"
@@ -249,7 +268,7 @@ four points or `null`/omitted to disable that channel.
 ```json
 {
   "jsonrpc": "2.0",
-  "id": 9,
+  "id": 10,
   "method": "wave.submitWindow",
   "params": {
     "deviceId": "coyote-v3",
@@ -620,7 +639,9 @@ socket.addEventListener("message", async function onHello(event) {
   });
 
   setTimeout(() => {
-    request("wave.stopPreview").catch(console.error);
+    request("wave.stopPreview")
+      .then(() => request("device.disconnect", { deviceId: "coyote-v3" }))
+      .catch(console.error);
   }, 1000);
 });
 ```

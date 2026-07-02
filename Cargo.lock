@@ -149,6 +149,7 @@ name = "arcflow-tauri-platform"
 version = "0.1.0"
 dependencies = [
  "arcflow-core",
+ "arcflow-protocol",
  "async-trait",
  "btleplug",
  "tokio",

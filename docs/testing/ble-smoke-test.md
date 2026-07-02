@@ -10,11 +10,14 @@ tests.
 Covered:
 
 - Desktop Tauri 2 shell.
-- Coyote V3 discovery through the native BLE provider.
+- Coyote V3 discovery through the native BLE provider, including the
+  documented `47L121000` local-name fallback when the operating system does not
+  expose service UUIDs during advertising.
 - Device connection from the shared React device page.
 - Battery percentage read after connection.
 - Output activation and conservative A/B channel strength preview.
 - Stop output.
+- Device disconnect through Rust-owned BLE provider.
 
 Not covered yet:
 
@@ -48,7 +51,8 @@ The app should open a desktop window and show the Device workspace.
    Expected:
 
    - Adapter status changes away from the unsupported fallback.
-   - A Coyote V3 row appears if the device advertises service `0x180C`.
+   - A Coyote V3 row appears if the device advertises service `0x180C` or the
+     documented V3 local name `47L121000`.
    - The row is initially `Offline` if ArcFlow has discovered but not connected
      to it yet.
 
@@ -92,6 +96,15 @@ The app should open a desktop window and show the Device workspace.
    - Runtime events include stop/output write activity.
    - The device should stop output promptly.
 
+7. Click the device disconnect action.
+
+   Expected:
+
+   - The device row changes from `Ready` or `Output` back to `Offline`.
+   - Runtime events include `device.disconnected`.
+   - The output-device set is empty for that device.
+   - A later `Scan` can rediscover the device.
+
 ## Failure Notes
 
 Record these details when a step fails:
@@ -107,7 +120,9 @@ Record these details when a step fails:
 
 Useful first checks:
 
-- If scan never finds the device, restart the device and run `Scan` again.
+- If scan never finds the device, restart the device and run `Scan` again. The
+  native provider scans for five seconds and accepts either service `0x180C` or
+  local name `47L121000` for Coyote V3 discovery.
 - If connect fails, confirm the device is not already connected to another app.
 - If battery stays unknown, continue testing output; battery read failure should
   not block Coyote V3 output writes.

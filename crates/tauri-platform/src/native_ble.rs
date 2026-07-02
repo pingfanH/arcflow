@@ -6,6 +6,7 @@ use arcflow_core::{
     BleAdvertisement, BleCharacteristic, CoreError, DeviceId, COYOTE_V2_SERVICE_UUID,
     COYOTE_V3_SERVICE_UUID,
 };
+use arcflow_protocol::coyote::{V2_DEVICE_NAME, V3_DEVICE_NAME};
 use async_trait::async_trait;
 use btleplug::{
     api::{Central, Characteristic, Manager as _, Peripheral as _, ScanFilter, WriteType},
@@ -20,7 +21,7 @@ use crate::{
     TauriBleWriteRequest,
 };
 
-const DEFAULT_SCAN_DURATION: Duration = Duration::from_millis(2500);
+const DEFAULT_SCAN_DURATION: Duration = Duration::from_secs(5);
 
 /// Desktop BLE provider used by Tauri shells on platforms supported by `btleplug`.
 #[derive(Debug)]
@@ -168,12 +169,11 @@ impl TauriBleDiscoveryProvider for NativeBlePlatformProvider {
                 .iter()
                 .filter_map(short_uuid)
                 .collect::<Vec<_>>();
-
-            if !service_uuids.contains(&COYOTE_V2_SERVICE_UUID)
-                && !service_uuids.contains(&COYOTE_V3_SERVICE_UUID)
-            {
+            let Some(service_uuids) =
+                coyote_service_uuids(service_uuids, properties.local_name.as_deref())
+            else {
                 continue;
-            }
+            };
 
             let connected = peripheral.is_connected().await.unwrap_or(false);
             let battery_percent = if connected {
@@ -247,6 +247,18 @@ impl TauriBlePlatformProvider for NativeBlePlatformProvider {
         Ok(TauriBleConnectionState::new(device_id, battery_percent))
     }
 
+    async fn disconnect_device(&self, device_id: &DeviceId) -> Result<(), CoreError> {
+        let peripheral = self.connections.lock().await.remove(device_id);
+
+        if let Some(peripheral) = peripheral {
+            if peripheral.is_connected().await.map_err(transport_error)? {
+                peripheral.disconnect().await.map_err(transport_error)?;
+            }
+        }
+
+        Ok(())
+    }
+
     async fn read_battery_percent(&self, device_id: &DeviceId) -> Result<Option<u8>, CoreError> {
         let peripheral = self.ensure_connected(device_id).await?;
         self.read_battery_from_peripheral(&peripheral).await
@@ -276,6 +288,42 @@ fn short_uuid(uuid: &Uuid) -> Option<u16> {
     u16::from_str_radix(hex, 16).ok()
 }
 
+fn coyote_service_uuids(mut service_uuids: Vec<u16>, local_name: Option<&str>) -> Option<Vec<u16>> {
+    if service_uuids.contains(&COYOTE_V2_SERVICE_UUID)
+        || service_uuids.contains(&COYOTE_V3_SERVICE_UUID)
+    {
+        return Some(service_uuids);
+    }
+
+    let service_uuid = coyote_service_uuid_from_local_name(local_name?)?;
+    service_uuids.push(service_uuid);
+    Some(service_uuids)
+}
+
+fn coyote_service_uuid_from_local_name(local_name: &str) -> Option<u16> {
+    let name = local_name.trim();
+    if name.eq_ignore_ascii_case(V3_DEVICE_NAME)
+        || name.eq_ignore_ascii_case("coyote")
+        || name.eq_ignore_ascii_case("coyote v3")
+        || name.eq_ignore_ascii_case("coyote 3")
+    {
+        return Some(COYOTE_V3_SERVICE_UUID);
+    }
+
+    if name.eq_ignore_ascii_case(V2_DEVICE_NAME)
+        || name.eq_ignore_ascii_case("coyote v2")
+        || name.eq_ignore_ascii_case("coyote 2")
+    {
+        return Some(COYOTE_V2_SERVICE_UUID);
+    }
+
+    if name.contains("郊狼") {
+        return Some(COYOTE_V3_SERVICE_UUID);
+    }
+
+    None
+}
+
 fn transport_error(error: impl std::fmt::Display) -> CoreError {
     CoreError::Transport(error.to_string())
 }
@@ -303,5 +351,39 @@ mod tests {
         let uuid = Uuid::parse_str("f000180c-0000-1000-8000-00805f9b34fb").unwrap();
 
         assert_eq!(short_uuid(&uuid), None);
+    }
+
+    #[test]
+    fn keeps_coyote_service_advertisements() {
+        assert_eq!(
+            coyote_service_uuids(vec![COYOTE_V3_SERVICE_UUID], None),
+            Some(vec![COYOTE_V3_SERVICE_UUID])
+        );
+        assert_eq!(
+            coyote_service_uuids(vec![COYOTE_V2_SERVICE_UUID], Some("Other")),
+            Some(vec![COYOTE_V2_SERVICE_UUID])
+        );
+    }
+
+    #[test]
+    fn infers_coyote_v3_service_from_documented_local_name() {
+        assert_eq!(
+            coyote_service_uuids(Vec::new(), Some(V3_DEVICE_NAME)),
+            Some(vec![COYOTE_V3_SERVICE_UUID])
+        );
+    }
+
+    #[test]
+    fn infers_coyote_v2_service_from_documented_local_name() {
+        assert_eq!(
+            coyote_service_uuids(Vec::new(), Some(V2_DEVICE_NAME)),
+            Some(vec![COYOTE_V2_SERVICE_UUID])
+        );
+    }
+
+    #[test]
+    fn ignores_unknown_named_devices_without_coyote_services() {
+        assert_eq!(coyote_service_uuids(Vec::new(), Some("Keyboard")), None);
+        assert_eq!(coyote_service_uuids(Vec::new(), None), None);
     }
 }

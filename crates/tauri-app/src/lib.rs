@@ -97,6 +97,7 @@ const RUNTIME_STATUS_METHOD: &str = "runtime.status";
 const RUNTIME_EVENTS_METHOD: &str = "runtime.events";
 const RUNTIME_PLUGINS_METHOD: &str = "runtime.plugins";
 const DEVICE_CONNECT_METHOD: &str = "device.connect";
+const DEVICE_DISCONNECT_METHOD: &str = "device.disconnect";
 const PLUGIN_INVOKE_HOOK_METHOD: &str = "plugin.invokeHook";
 const WAVE_PREVIEW_STATUS_METHOD: &str = "wave.previewStatus";
 const WAVE_PREVIEW_START_METHOD: &str = "wave.startPreview";
@@ -591,6 +592,15 @@ async fn connect_device(
 }
 
 #[tauri::command]
+async fn disconnect_device(
+    device_id: String,
+    state: tauri::State<'_, CoreState>,
+    runtime_state: tauri::State<'_, RuntimeState>,
+) -> Result<DeviceScanResponse, String> {
+    disconnect_device_and_scan(&state.core, &runtime_state, DeviceId::new(device_id)).await
+}
+
+#[tauri::command]
 fn preview_playback_status(state: tauri::State<'_, PreviewPlaybackState>) -> PreviewPlaybackStatus {
     preview_playback_status_from_state(&state)
 }
@@ -1032,6 +1042,17 @@ fn external_request_handler(
                 };
             }
 
+            if request.method == DEVICE_DISCONNECT_METHOD {
+                let response =
+                    execute_device_disconnect_external_request(&session, &request, &core, &runtime)
+                        .await;
+
+                return match response {
+                    Ok(result) => JsonRpcResponse::ok(id, result),
+                    Err(error) => JsonRpcResponse::error(id, error),
+                };
+            }
+
             if request.method == RUNTIME_STATUS_METHOD {
                 let response =
                     execute_runtime_status_external_request(&session, &runtime, &plugin_runtime)
@@ -1102,6 +1123,20 @@ async fn execute_device_connect_external_request(
     authorize_external_capability(session, DEVICE_CONNECT_METHOD, Capability::WaveControl)?;
     let params: DeviceParams = read_external_params(request)?;
     connect_device_and_scan(core, runtime, DeviceId::new(params.device_id))
+        .await
+        .and_then(|response| serde_json::to_value(response).map_err(|error| error.to_string()))
+        .map_err(|error| RpcError::new(-32000, error))
+}
+
+async fn execute_device_disconnect_external_request(
+    session: &ClientSession,
+    request: &JsonRpcRequest,
+    core: &ArcFlowCore,
+    runtime: &RuntimeState,
+) -> Result<serde_json::Value, RpcError> {
+    authorize_external_capability(session, DEVICE_DISCONNECT_METHOD, Capability::WaveControl)?;
+    let params: DeviceParams = read_external_params(request)?;
+    disconnect_device_and_scan(core, runtime, DeviceId::new(params.device_id))
         .await
         .and_then(|response| serde_json::to_value(response).map_err(|error| error.to_string()))
         .map_err(|error| RpcError::new(-32000, error))
@@ -1467,6 +1502,37 @@ async fn connect_device_and_scan(
             ),
             None => format!("device `{}` connected", connection.device_id.as_str()),
         },
+    );
+
+    let scan = core
+        .scan_devices()
+        .await
+        .map_err(|error| error.to_string())?;
+    sync_active_coyote_v3_output_devices(runtime, &scan);
+
+    Ok(device_scan_response(scan))
+}
+
+async fn disconnect_device_and_scan(
+    core: &ArcFlowCore,
+    runtime: &RuntimeState,
+    device_id: DeviceId,
+) -> Result<DeviceScanResponse, String> {
+    if core.active_output_devices().contains(&device_id) {
+        core.stop_all_output().map_err(|error| error.to_string())?;
+        core.detach_output_device(&device_id)
+            .map_err(|error| error.to_string())?;
+    }
+
+    runtime
+        .ble_platform_provider
+        .disconnect_device(&device_id)
+        .await
+        .map_err(|error| error.to_string())?;
+
+    runtime.events.push(
+        "device.disconnected",
+        format!("device `{}` disconnected", device_id.as_str()),
     );
 
     let scan = core
@@ -1848,6 +1914,7 @@ where
             run_script,
             scan_devices,
             connect_device,
+            disconnect_device,
             stop_output,
             activate_output_device,
             deactivate_output_device,
@@ -1973,6 +2040,13 @@ mod tests {
                 .expect("connected BLE test provider mutex poisoned")
                 .clone()
         }
+
+        fn disconnect(&self, device_id: &DeviceId) {
+            self.connected
+                .lock()
+                .expect("connected BLE test provider mutex poisoned")
+                .retain(|connected_id| connected_id != device_id);
+        }
     }
 
     #[async_trait::async_trait]
@@ -2037,6 +2111,14 @@ mod tests {
             _device_id: &DeviceId,
         ) -> Result<Option<u8>, arcflow_core::CoreError> {
             Ok(self.battery_percent)
+        }
+
+        async fn disconnect_device(
+            &self,
+            device_id: &DeviceId,
+        ) -> Result<(), arcflow_core::CoreError> {
+            self.disconnect(device_id);
+            Ok(())
         }
     }
 
@@ -2334,6 +2416,38 @@ mod tests {
             vec![DeviceId::new("coyote-v3")]
         );
         assert_eq!(response.result.unwrap()["devices"][0]["batteryPercent"], 91);
+    }
+
+    #[tokio::test]
+    async fn device_disconnect_external_request_disconnects_and_returns_scan() {
+        let provider = Arc::new(ConnectingBleProvider::new(Some(88)));
+        let (runtime, core) = runtime_state_with_platform_provider(provider.clone());
+        let session = session_with(vec![Capability::WaveControl]);
+        let connect = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(43),
+            DEVICE_CONNECT_METHOD,
+            Some(serde_json::json!({ "deviceId": "coyote-v3" })),
+        );
+        let disconnect = JsonRpcRequest::new(
+            arcflow_external_control::RequestId::Number(44),
+            DEVICE_DISCONNECT_METHOD,
+            Some(serde_json::json!({ "deviceId": "coyote-v3" })),
+        );
+
+        execute_device_connect_external_request(&session, &connect, &core, &runtime)
+            .await
+            .unwrap();
+        let response =
+            execute_device_disconnect_external_request(&session, &disconnect, &core, &runtime)
+                .await
+                .unwrap();
+
+        assert!(provider.connected_devices().is_empty());
+        assert_eq!(response["adapterStatus"], "ready");
+        assert_eq!(response["devices"][0]["id"], "coyote-v3");
+        assert_eq!(response["devices"][0]["connected"], false);
+        assert!(runtime.output_controller.active_devices().is_empty());
+        assert_eq!(runtime.events.list()[1].kind, "device.disconnected");
     }
 
     #[tokio::test]

@@ -450,6 +450,19 @@ function App() {
       .finally(() => setOutputDeviceBusyId(null));
   };
 
+  const disconnectDevice = (deviceId: string) => {
+    setOutputDeviceBusyId(deviceId);
+    invoke<DeviceScanResponse>("disconnect_device", { deviceId })
+      .then((result) => {
+        setLastScan(result);
+        setDeviceOnline(result.devices.some((device) => device.connected));
+        refreshRuntimeStatus();
+        refreshRuntimeEvents();
+      })
+      .catch((error) => setWaveError(String(error)))
+      .finally(() => setOutputDeviceBusyId(null));
+  };
+
   const stopOutput = () => {
     setStopBusy(true);
     invoke<StopOutputResponse>("stop_output")
@@ -723,6 +736,7 @@ function App() {
                     onActivate={activateOutputDevice}
                     onConnect={connectDevice}
                     onDeactivate={deactivateOutputDevice}
+                    onDisconnect={disconnectDevice}
                   />
                 </section>
 
@@ -952,6 +966,7 @@ type DeviceListProps = {
   onActivate: (deviceId: string) => void;
   onConnect: (deviceId: string) => void;
   onDeactivate: (deviceId: string) => void;
+  onDisconnect: (deviceId: string) => void;
 };
 
 function DeviceList({
@@ -961,6 +976,7 @@ function DeviceList({
   onActivate,
   onConnect,
   onDeactivate,
+  onDisconnect,
 }: DeviceListProps) {
   if (devices.length === 0) {
     return (
@@ -1012,27 +1028,40 @@ function DeviceList({
                 {device.id} - {batteryLabel(device.batteryPercent)}
               </div>
             </div>
-            <button
-              className={`grid size-9 shrink-0 place-items-center rounded-lg border disabled:cursor-not-allowed disabled:opacity-50 ${
-                outputActive
-                  ? "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
-                  : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100"
-              }`}
-              disabled={(device.connected && !supportsOutput) || busy}
-              title={actionTitle}
-              type="button"
-              onClick={() => {
-                if (!device.connected) {
-                  onConnect(device.id);
-                } else if (outputActive) {
-                  onDeactivate(device.id);
-                } else {
-                  onActivate(device.id);
-                }
-              }}
-            >
-              <ActionIcon size={16} />
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                className={`grid size-9 place-items-center rounded-lg border disabled:cursor-not-allowed disabled:opacity-50 ${
+                  outputActive
+                    ? "border-red-200 bg-red-50 text-red-700 hover:bg-red-100"
+                    : "border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100"
+                }`}
+                disabled={(device.connected && !supportsOutput) || busy}
+                title={actionTitle}
+                type="button"
+                onClick={() => {
+                  if (!device.connected) {
+                    onConnect(device.id);
+                  } else if (outputActive) {
+                    onDeactivate(device.id);
+                  } else {
+                    onActivate(device.id);
+                  }
+                }}
+              >
+                <ActionIcon size={16} />
+              </button>
+              {device.connected ? (
+                <button
+                  className="grid size-9 place-items-center rounded-lg border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={busy}
+                  title="Disconnect device"
+                  type="button"
+                  onClick={() => onDisconnect(device.id)}
+                >
+                  <Cable size={16} />
+                </button>
+              ) : null}
+            </div>
           </div>
         );
       })}

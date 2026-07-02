@@ -25,6 +25,9 @@ pub trait TauriBlePlatformProvider:
         device_id: DeviceId,
     ) -> Result<TauriBleConnectionState, CoreError>;
 
+    /// Disconnects a connected BLE device if the backend owns that connection.
+    async fn disconnect_device(&self, device_id: &DeviceId) -> Result<(), CoreError>;
+
     /// Reads a connected device battery percentage when available.
     async fn read_battery_percent(&self, device_id: &DeviceId) -> Result<Option<u8>, CoreError>;
 }
@@ -91,6 +94,12 @@ impl TauriBlePlatformProvider for UnsupportedTauriBlePlatformProvider {
             "tauri BLE platform provider is not configured".to_owned(),
         ))
     }
+
+    async fn disconnect_device(&self, _device_id: &DeviceId) -> Result<(), CoreError> {
+        Err(CoreError::Transport(
+            "tauri BLE platform provider is not configured".to_owned(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -146,9 +155,14 @@ mod tests {
             .read_battery_percent(&DeviceId::new("coyote-v3"))
             .await
             .unwrap_err();
+        let disconnect_error = provider
+            .disconnect_device(&DeviceId::new("coyote-v3"))
+            .await
+            .unwrap_err();
 
         assert!(connect_error.to_string().contains("not configured"));
         assert!(battery_error.to_string().contains("not configured"));
+        assert!(disconnect_error.to_string().contains("not configured"));
     }
 
     #[test]
