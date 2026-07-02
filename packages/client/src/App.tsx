@@ -304,6 +304,7 @@ function App({ platform }: AppProps = {}) {
   const [scripts, setScripts] = useState<ScriptsResponse | null>(null);
   const [lastScriptRun, setLastScriptRun] = useState<ScriptRunResponse | null>(null);
   const [scanBusy, setScanBusy] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
   const [stopBusy, setStopBusy] = useState(false);
   const [waveBusy, setWaveBusy] = useState(false);
   const [waveError, setWaveError] = useState<string | null>(null);
@@ -412,6 +413,7 @@ function App({ platform }: AppProps = {}) {
 
   const scanDevices = () => {
     setScanBusy(true);
+    setScanError(null);
     invoke<DeviceScanResponse>("scan_devices")
       .then((result) => {
         setLastScan(result);
@@ -419,9 +421,11 @@ function App({ platform }: AppProps = {}) {
         refreshRuntimeStatus();
         refreshRuntimeEvents();
       })
-      .catch(() => {
+      .catch((error) => {
         setLastScan(emptyDeviceScan);
+        setScanError(errorMessage(error));
         setDeviceOnline(false);
+        refreshRuntimeEvents();
       })
       .finally(() => setScanBusy(false));
   };
@@ -671,6 +675,27 @@ function App({ platform }: AppProps = {}) {
     lastScan?.devices.filter((device: DeviceSummary) => device.connected).length ?? 0;
   const activeOutputDeviceIds = runtimeStatus?.activeOutputDevices ?? [];
   const playing = previewStatus.running;
+  const latestScanDiagnostic = useMemo(() => {
+    return runtimeEvents?.events
+      .slice()
+      .reverse()
+      .find((event) => event.kind === "device.scan.diagnostics");
+  }, [runtimeEvents]);
+  const deviceListDetail = useMemo(() => {
+    if (scanError) {
+      return scanError;
+    }
+
+    if (latestScanDiagnostic) {
+      return latestScanDiagnostic.message;
+    }
+
+    if (lastScan) {
+      return `Adapter ${lastScan.adapterStatus}`;
+    }
+
+    return null;
+  }, [lastScan, latestScanDiagnostic, scanError]);
   const deviceSubtitle = useMemo(() => {
     if (connectedDeviceCount > 0) {
       return connectedDeviceCount === 1
@@ -773,6 +798,7 @@ function App({ platform }: AppProps = {}) {
                   <DeviceList
                     activeOutputDeviceIds={activeOutputDeviceIds}
                     busyDeviceId={outputDeviceBusyId}
+                    emptyDetail={deviceListDetail}
                     devices={lastScan?.devices ?? []}
                     onActivate={activateOutputDevice}
                     onConnect={connectDevice}
@@ -1013,6 +1039,7 @@ function App({ platform }: AppProps = {}) {
 type DeviceListProps = {
   activeOutputDeviceIds: string[];
   busyDeviceId: string | null;
+  emptyDetail: string | null;
   devices: DeviceSummary[];
   onActivate: (deviceId: string) => void;
   onConnect: (deviceId: string) => void;
@@ -1023,6 +1050,7 @@ type DeviceListProps = {
 function DeviceList({
   activeOutputDeviceIds,
   busyDeviceId,
+  emptyDetail,
   devices,
   onActivate,
   onConnect,
@@ -1031,8 +1059,9 @@ function DeviceList({
 }: DeviceListProps) {
   if (devices.length === 0) {
     return (
-      <div className="mb-4 rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-500">
-        No devices
+      <div className="mb-4 rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-3 py-2">
+        <div className="text-sm font-medium text-zinc-600">No devices</div>
+        {emptyDetail ? <div className="mt-1 text-xs text-zinc-500">{emptyDetail}</div> : null}
       </div>
     );
   }

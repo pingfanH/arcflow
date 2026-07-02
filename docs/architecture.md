@@ -117,9 +117,9 @@ runtime host. UI and plugin bridge registry mutations update SQLite first,
 then synchronize the Core-owned runtime lifecycle so enabled plugins are loaded
 and disabled plugins are unloaded through the same path.
 
-Current plugin bridge routes include device status, wave control, automation
-run, automation document management, plugin registry management, and enabled
-plugin hook invocation. See `docs/external-control/websocket.md`.
+Current plugin bridge routes include device scan/status, wave control,
+automation run, automation document management, plugin registry management, and
+enabled plugin hook invocation. See `docs/external-control/websocket.md`.
 
 ## Plugin Automation Flow
 

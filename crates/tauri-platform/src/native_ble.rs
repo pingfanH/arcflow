@@ -324,18 +324,22 @@ fn coyote_service_uuids(mut service_uuids: Vec<u16>, local_name: Option<&str>) -
 
 fn coyote_service_uuid_from_local_name(local_name: &str) -> Option<u16> {
     let name = local_name.trim();
-    if name.eq_ignore_ascii_case(V3_DEVICE_NAME)
-        || name.eq_ignore_ascii_case("coyote")
-        || name.eq_ignore_ascii_case("coyote v3")
-        || name.eq_ignore_ascii_case("coyote 3")
+    let uppercase_name = name.to_ascii_uppercase();
+    let compact_name = uppercase_name
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect::<String>();
+
+    if uppercase_name == V3_DEVICE_NAME
+        || uppercase_name.starts_with("47L121")
+        || compact_name == "COYOTE"
+        || compact_name == "COYOTEV3"
+        || compact_name == "COYOTE3"
     {
         return Some(COYOTE_V3_SERVICE_UUID);
     }
 
-    if name.eq_ignore_ascii_case(V2_DEVICE_NAME)
-        || name.eq_ignore_ascii_case("coyote v2")
-        || name.eq_ignore_ascii_case("coyote 2")
-    {
+    if uppercase_name == V2_DEVICE_NAME || compact_name == "COYOTEV2" || compact_name == "COYOTE2" {
         return Some(COYOTE_V2_SERVICE_UUID);
     }
 
@@ -391,6 +395,18 @@ mod tests {
     fn infers_coyote_v3_service_from_documented_local_name() {
         assert_eq!(
             coyote_service_uuids(Vec::new(), Some(V3_DEVICE_NAME)),
+            Some(vec![COYOTE_V3_SERVICE_UUID])
+        );
+    }
+
+    #[test]
+    fn infers_coyote_v3_service_from_serial_name_variants() {
+        assert_eq!(
+            coyote_service_uuids(Vec::new(), Some("47L121009")),
+            Some(vec![COYOTE_V3_SERVICE_UUID])
+        );
+        assert_eq!(
+            coyote_service_uuids(Vec::new(), Some("Coyote-V3")),
             Some(vec![COYOTE_V3_SERVICE_UUID])
         );
     }

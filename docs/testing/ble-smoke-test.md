@@ -11,8 +11,8 @@ Covered:
 
 - Desktop Tauri 2 shell.
 - Coyote V3 discovery through the native BLE provider, including the
-  documented `47L121000` local-name fallback when the operating system does not
-  expose service UUIDs during advertising.
+  documented `47L121000` local-name fallback and `47L121` serial-name variants
+  when the operating system does not expose service UUIDs during advertising.
 - Device connection from the shared React device page.
 - Battery percentage read after connection.
 - Output activation and conservative A/B channel strength preview.
@@ -51,8 +51,8 @@ The app should open a desktop window and show the Device workspace.
    Expected:
 
    - Adapter status changes away from the unsupported fallback.
-   - A Coyote V3 row appears if the device advertises service `0x180C` or the
-     documented V3 local name `47L121000`.
+   - A Coyote V3 row appears if the device advertises service `0x180C`, the
+     documented V3 local name `47L121000`, or a `47L121` serial-name variant.
    - The row is initially `Offline` if ArcFlow has discovered but not connected
      to it yet.
    - Runtime events include `device.scan.diagnostics`, summarizing how many BLE
@@ -132,8 +132,8 @@ Record these details when a step fails:
 Useful first checks:
 
 - If scan never finds the device, restart the device and run `Scan` again. The
-  native provider scans for five seconds and accepts either service `0x180C` or
-  local name `47L121000` for Coyote V3 discovery.
+  native provider scans for five seconds and accepts service `0x180C`, local
+  name `47L121000`, or `47L121` serial-name variants for Coyote V3 discovery.
 - If `device.scan.diagnostics` says `saw 0 peripherals`, the operating system
   did not expose any BLE peripherals to ArcFlow during that scan window.
 - If diagnostics show skipped peripherals with names or services, include that

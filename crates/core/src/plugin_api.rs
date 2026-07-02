@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 
 use crate::wave_submit::coyote_v3_output_request_from_value;
 use crate::{
-    BleAdapterStatus, DeviceDiscoveryController, DeviceId, DeviceOutputController, DeviceStatus,
+    BleAdapterStatus, DeviceDiscoveryController, DeviceId, DeviceModel, DeviceOutputController,
+    DeviceScanResult, DeviceStatus,
 };
 
 /// Core-owned plugin host API.
@@ -82,6 +83,7 @@ impl PluginApi {
             "storage.private.get" => self.storage_get(manifest, action.params),
             "storage.private.delete" => self.storage_delete(manifest, action.params),
             "storage.private.keys" => self.storage_keys(manifest),
+            "device.scan" => self.device_scan(manifest).await,
             "device.status" => self.device_status(manifest, action.params).await,
             "device.activateOutput" => self.activate_output_device(manifest, action.params),
             "device.deactivateOutput" => self.deactivate_output_device(manifest, action.params),
@@ -203,6 +205,20 @@ impl PluginApi {
                 "adapterStatus": scan.adapter_status.as_str(),
             })),
         }
+    }
+
+    async fn device_scan(&self, manifest: &PluginManifest) -> Result<Value, PluginApiError> {
+        ensure_capability(manifest, Capability::DeviceRead)?;
+        let discovery_controller = self
+            .discovery_controller
+            .as_ref()
+            .ok_or_else(|| PluginApiError::HostUnavailable("device.scan".to_owned()))?;
+        let scan = discovery_controller
+            .scan_devices()
+            .await
+            .map_err(|error| PluginApiError::Host(error.to_string()))?;
+
+        Ok(device_scan_payload(&scan))
     }
 
     fn activate_output_device(
@@ -407,6 +423,30 @@ fn device_status_payload(device: &DeviceStatus, adapter_status: BleAdapterStatus
         "adapterStatus": adapter_status.as_str(),
         "batteryPercent": device.battery_percent,
     })
+}
+
+fn device_scan_payload(scan: &DeviceScanResult) -> Value {
+    json!({
+        "adapterStatus": scan.adapter_status.as_str(),
+        "devices": scan.devices.iter().map(device_scan_item_payload).collect::<Vec<_>>(),
+    })
+}
+
+fn device_scan_item_payload(device: &DeviceStatus) -> Value {
+    json!({
+        "deviceId": device.id.as_str(),
+        "model": device_model_name(&device.model),
+        "connected": device.connected,
+        "batteryPercent": device.battery_percent,
+    })
+}
+
+fn device_model_name(model: &DeviceModel) -> &str {
+    match model {
+        DeviceModel::CoyoteV2 => "coyoteV2",
+        DeviceModel::CoyoteV3 => "coyoteV3",
+        DeviceModel::Unknown(name) => name.as_str(),
+    }
 }
 
 fn device_ids_payload(device_ids: Vec<DeviceId>) -> Vec<String> {
@@ -693,6 +733,86 @@ mod tests {
             })
         );
         assert_eq!(*discovery.scan_count.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn scans_devices_through_discovery_controller() {
+        let storage = in_memory_storage();
+        let discovery = Arc::new(FakeDiscoveryController::new(crate::DeviceScanResult::new(
+            BleAdapterStatus::Ready,
+            vec![DeviceStatus {
+                id: DeviceId::new("coyote-v3"),
+                model: crate::DeviceModel::CoyoteV3,
+                battery_percent: Some(87),
+                connected: true,
+            }],
+        )));
+        let discovery_controller: Arc<dyn DeviceDiscoveryController> = discovery.clone();
+        let api = PluginApi::with_discovery_controller(storage, discovery_controller);
+        let manifest = manifest_with(vec![Capability::DeviceRead]);
+
+        let result = api
+            .handle_action(&manifest, PluginAction::new("device.scan", json!({})))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result,
+            json!({
+                "adapterStatus": "ready",
+                "devices": [
+                    {
+                        "deviceId": "coyote-v3",
+                        "model": "coyoteV3",
+                        "connected": true,
+                        "batteryPercent": 87,
+                    }
+                ],
+            })
+        );
+        assert_eq!(*discovery.scan_count.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn rejects_device_scan_without_capability() {
+        let storage = in_memory_storage();
+        let discovery_controller: Arc<dyn DeviceDiscoveryController> =
+            Arc::new(FakeDiscoveryController::new(crate::DeviceScanResult::new(
+                BleAdapterStatus::Ready,
+                Vec::new(),
+            )));
+        let api = PluginApi::with_discovery_controller(storage, discovery_controller);
+        let manifest = manifest_with(vec![Capability::WaveControl]);
+
+        let error = api
+            .handle_action(&manifest, PluginAction::new("device.scan", json!({})))
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            PluginApiError::CapabilityDenied {
+                plugin_id: "com.example.plugin".to_owned(),
+                capability: Capability::DeviceRead,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_device_scan_without_discovery_controller() {
+        let storage = in_memory_storage();
+        let api = PluginApi::new(storage);
+        let manifest = manifest_with(vec![Capability::DeviceRead]);
+
+        let error = api
+            .handle_action(&manifest, PluginAction::new("device.scan", json!({})))
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error,
+            PluginApiError::HostUnavailable("device.scan".to_owned())
+        );
     }
 
     #[tokio::test]

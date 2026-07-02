@@ -89,6 +89,7 @@ Current host actions:
 
 | Method | Required capability | Purpose |
 | --- | --- | --- |
+| `device.scan` | `device.read` | Refresh Core-owned device discovery and return the adapter status plus discovered devices. |
 | `device.status` | `device.read` | Read one device's status through Core-owned device discovery. |
 | `device.activateOutput` | `wave.control` | Mark a device as active for Core-owned output writes. |
 | `device.deactivateOutput` | `wave.control` | Remove a device from active Core-owned output writes. |
@@ -104,5 +105,22 @@ An empty output is explicit:
 ```json
 {
   "actions": []
+}
+```
+
+`device.scan` returns the same Core-owned discovery shape used by IPC and the
+local plugin bridge:
+
+```json
+{
+  "adapterStatus": "ready",
+  "devices": [
+    {
+      "deviceId": "coyote-v3",
+      "model": "coyoteV3",
+      "connected": true,
+      "batteryPercent": 87
+    }
+  ]
 }
 ```
